@@ -349,4 +349,14 @@ describe("realtime collaboration", () => {
     expect(await b.next((m) => m.t === "steps")).toMatchObject({ version: 8 });
     b.ws.close();
   });
+
+  test("an import onto a kept session that went stale replaces what is stored", async () => {
+    const page = await editAfterBothLeave();
+    await sql`UPDATE pages SET content = ${doc("elsewhere")}::jsonb, doc_version = 7 WHERE id = ${page.id}`;
+    const res = await owner.post(`/pages/${page.id}/content`, { content: doc("imported") });
+    expect(res.status).toBe(200);
+    const [row] = await sql`SELECT content, doc_version FROM pages WHERE id = ${page.id}`;
+    expect(row.content).toEqual(doc("imported"));
+    expect(Number(row.doc_version)).toBe(8);
+  });
 });

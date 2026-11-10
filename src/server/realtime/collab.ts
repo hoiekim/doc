@@ -161,11 +161,12 @@ const openSession = (pageId: string): Promise<PageSession | null> => {
 };
 
 /**
- * The page's session for an editor joining it. One kept with nobody in it may
- * be stale: if this copy lost the lease and got it back, another copy may have
- * saved the page in between. Then the page is loaded again.
+ * The page's session, for an editor joining it or an import. One kept with
+ * nobody in it may be stale: if this copy lost the lease and got it back,
+ * another copy may have saved the page in between. Then the page is loaded
+ * again.
  */
-const sessionToJoin = async (pageId: string): Promise<PageSession | null> => {
+const currentSession = async (pageId: string): Promise<PageSession | null> => {
   for (;;) {
     const pending = openSession(pageId);
     const session = await pending;
@@ -247,7 +248,7 @@ export const joinPage = async (ws: Socket, rawPageId: unknown, version: unknown,
     return;
   }
   const readOnly = !(await canEditPage(userId, pageId));
-  const session = await sessionToJoin(pageId);
+  const session = await currentSession(pageId);
   if (!session) {
     send(ws, { t: "error", pageId, message: "Page not found" });
     return;
@@ -348,7 +349,7 @@ export const disconnect = async (ws: Socket) => {
  * editors receive it as a regular step.
  */
 export const replacePageContent = async (pageId: string, content: Node, userId: string) => {
-  const session = await openSession(pageId);
+  const session = await currentSession(pageId);
   if (!session) return false;
   const { authority } = session;
   const size = contentSize(authority.doc, schema);
