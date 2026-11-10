@@ -6,7 +6,7 @@ import type { AuthUser } from "server/lib/auth";
 import { log } from "server/lib/logger";
 import { onMembershipChange, registry, type Socket, type SocketData } from "./hub";
 import { disconnect, flushAll, joinPage, leavePage, receiveSteps, refreshOpenSessions, updatePresence } from "./collab";
-import { isLeader, releaseLease, stopLeading } from "./leader";
+import { isLeader, onLeadLost, releaseLease, stopLeading } from "./leader";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 /** Messages a socket may send per second before it is disconnected. */
@@ -57,6 +57,13 @@ onMembershipChange((userIds) => {
     userIds === "all" ? registry.allSockets() : userIds.flatMap((id) => [...registry.userSockets(id)]);
   refreshSpaces(sockets).catch((error) => log.error("refreshing socket subscriptions failed", error));
   refreshOpenSessions(userIds === "all" ? {} : { userIds }).catch((error) => log.error("re-checking editor access failed", error));
+});
+
+// Turned away at once, not at their next message: a quiet editor would miss
+// what others type on the new leader, and if this copy leads again, its
+// session may have gone stale under it.
+onLeadLost(() => {
+  for (const ws of registry.allSockets()) ws.close(NOT_LEADER, "not the realtime leader");
 });
 
 const send = (ws: Socket, message: Record<string, unknown>) => ws.send(JSON.stringify(message));

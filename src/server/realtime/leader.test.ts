@@ -82,6 +82,22 @@ const connect = async (copy: Copy) => {
   return { ws, next, closed, send: (m: Record<string, unknown>) => ws.send(JSON.stringify(m)) };
 };
 
+/** Makes every claim of the lease take `seconds` longer, until the returned function is called. */
+const slowClaims = async (seconds: number) => {
+  await sql.unsafe(`CREATE OR REPLACE FUNCTION slow_claim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(${seconds}); RETURN NEW; END $$`);
+  await sql.unsafe(`CREATE OR REPLACE TRIGGER slow_claim BEFORE INSERT ON realtime_leader FOR EACH ROW EXECUTE FUNCTION slow_claim()`);
+  return async () => {
+    await sql.unsafe(`DROP TRIGGER slow_claim ON realtime_leader`);
+    await sql.unsafe(`DROP FUNCTION slow_claim`);
+  };
+};
+
+/** Whether a claim is held up by `slowClaims`. */
+const sleeping = async () => {
+  const [row] = await sql`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'PgSleep'`;
+  return row.n > 0;
+};
+
 const addText = (version: number, from: number, text: string) => ({
   t: "steps",
   pageId: page.id,
@@ -144,17 +160,29 @@ describe("two copies of the server", () => {
     again.ws.close();
   }, 20_000);
 
-  test("a leader that loses its lease turns its sockets away", async () => {
+  test("a leader that loses its lease closes its sockets", async () => {
     const editor = await connect(second);
     await sql`UPDATE realtime_leader SET holder = 'someone else', expires_at = now() + interval '1 hour'`;
-    for (let i = 0; i < 100 && (await leads(second)); i++) await Bun.sleep(100);
+    // The editor sends nothing: a quiet one isn't left on a copy that no longer leads.
+    expect(await Promise.race([editor.closed, Bun.sleep(5000).then(() => "still open")])).toBe(1013);
     expect(await leads(second)).toBe(false);
-    editor.send({ t: "ping" });
-    expect(await editor.closed).toBe(1013);
 
     await sql`DELETE FROM realtime_leader`;
     await untilLeading(second, 3000);
   }, 20_000);
+
+  test("a leader whose renewal hangs closes its sockets when its lease runs out", async () => {
+    const editor = await connect(second);
+    const restore = await slowClaims(14);
+    try {
+      expect(await Promise.race([editor.closed, Bun.sleep(13_000).then(() => "still open")])).toBe(1013);
+      // Before the renewal that would have said so has finished.
+      expect(await sleeping()).toBe(true);
+    } finally {
+      await restore();
+    }
+    await untilLeading(second, 5000);
+  }, 40_000);
 
   test("when a leader dies, a successor waits for its lease to run out", async () => {
     third = await startCopy();
@@ -166,13 +194,8 @@ describe("two copies of the server", () => {
   }, 30_000);
 
   test("a renewal still running at shutdown doesn't bring the lease back", async () => {
-    const sleeping = async () => {
-      const [row] = await sql`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'PgSleep'`;
-      return row.n > 0;
-    };
     // This runs before the renewal touches the row, so a release can overtake it.
-    await sql.unsafe(`CREATE OR REPLACE FUNCTION slow_claim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1); RETURN NEW; END $$`);
-    await sql.unsafe(`CREATE OR REPLACE TRIGGER slow_claim BEFORE INSERT ON realtime_leader FOR EACH ROW EXECUTE FUNCTION slow_claim()`);
+    const restore = await slowClaims(1);
     try {
       for (let i = 0; i < 300 && !(await sleeping()); i++) await Bun.sleep(20);
       expect(await sleeping()).toBe(true);
@@ -181,8 +204,7 @@ describe("two copies of the server", () => {
       for (let i = 0; i < 100 && (await sleeping()); i++) await Bun.sleep(20);
       expect((await sql`SELECT holder FROM realtime_leader`).length).toBe(0);
     } finally {
-      await sql.unsafe(`DROP TRIGGER slow_claim ON realtime_leader`);
-      await sql.unsafe(`DROP FUNCTION slow_claim`);
+      await restore();
     }
   }, 20_000);
 });

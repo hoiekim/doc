@@ -172,10 +172,11 @@ const takeOver = (session: PageSession) => {
 };
 
 /**
- * The page's session, for an editor joining it or an import, which take it
- * over as soon as this returns. One kept with nobody in it may be stale: if
- * this copy lost the lease and got it back, another copy may have saved the
- * page in between. Then the page is loaded again.
+ * The page's session, for an editor joining it or an import. It is taken over
+ * before it is returned, so its release timer can't let it go while an import
+ * saves, and no other join's check can drop it. One kept with nobody in it may
+ * be stale: if this copy lost the lease and got it back, another copy may have
+ * saved the page in between. Then the page is loaded again.
  */
 const currentSession = async (pageId: string) => {
   for (;;) {
@@ -184,14 +185,16 @@ const currentSession = async (pageId: string) => {
     if (session?.idleTimer && !(await session.isCurrent())) {
       // Unless someone took it over while this checked: an import's save can
       // make the stored version look newer for a moment.
-      if (session.idleTimer) {
-        takeOver(session);
-        forgetSession(pageId, pending);
-      }
+      if (session.idleTimer && session.clients.size === 0) forgetSession(pageId, pending);
+      takeOver(session);
       continue;
     }
     // The session may have been let go while this waited.
-    if (sessions.get(pageId) === pending) return { pending, session };
+    if (sessions.get(pageId) !== pending) continue;
+    if (session) takeOver(session);
+    // A page that is gone isn't remembered as gone.
+    else forgetSession(pageId, pending);
+    return { pending, session };
   }
 };
 
@@ -263,11 +266,18 @@ export const joinPage = async (ws: Socket, rawPageId: unknown, version: unknown,
     return;
   }
   const readOnly = !(await canEditPage(userId, pageId));
-  const { session } = await currentSession(pageId);
+  const { pending, session } = await currentSession(pageId);
   if (!session) {
     send(ws, { t: "error", pageId, message: "Page not found" });
     return;
   }
+  // The socket may have closed while this waited. Its disconnect has run
+  // already, so a client added now would never be removed.
+  if (ws.readyState !== WebSocket.OPEN) {
+    if (session.clients.size === 0 && !session.dirty) releaseSession(pageId, pending, session);
+    return;
+  }
+  // An editor leaving since may have set its release timer again.
   takeOver(session);
   const existing = session.clients.get(ws);
   session.clients.set(ws, {
@@ -365,30 +375,30 @@ export const disconnect = async (ws: Socket) => {
 export const replacePageContent = async (pageId: string, content: Node, userId: string) => {
   const { pending, session } = await currentSession(pageId);
   if (!session) return false;
-  // A kept session's timer would otherwise let it go while this saves.
-  takeOver(session);
-  const { authority } = session;
-  const size = contentSize(authority.doc, schema);
-  const step: Step = { stepType: "replace", from: 0, to: size, slice: nodesToItems(content.content ?? [], schema) };
-  const accepted = authority.receive(authority.version, [step], "server");
-  if (!accepted) {
-    if (session.clients.size === 0 && !session.dirty) releaseSession(pageId, pending, session);
-    throw new Error(authority.rejection === "too-large" ? "too-large" : "invalid");
+  let saved = false;
+  try {
+    const { authority } = session;
+    const size = contentSize(authority.doc, schema);
+    const step: Step = { stepType: "replace", from: 0, to: size, slice: nodesToItems(content.content ?? [], schema) };
+    const accepted = authority.receive(authority.version, [step], "server");
+    if (!accepted) throw new Error(authority.rejection === "too-large" ? "too-large" : "invalid");
+    session.broadcast({ t: "steps", pageId, version: authority.version, steps: accepted, clientIds: ["server"] });
+    session.dirty = true;
+    session.editors.add(userId);
+    session.lastEditor = userId;
+    await session.save();
+    saved = !session.dirty && session.authority === authority;
+    // A failed save stays in memory for the next save attempt; report it.
+    if (!saved) throw new Error("Saving the page failed");
+    return true;
+  } finally {
+    // Taken over by `currentSession`: hand it back whatever happened.
+    if (session.clients.size === 0 && !session.dirty) {
+      // A saved import isn't kept: its one step can be the whole document.
+      if (saved) forgetSession(pageId, pending);
+      else releaseSession(pageId, pending, session);
+    }
   }
-  session.broadcast({ t: "steps", pageId, version: authority.version, steps: accepted, clientIds: ["server"] });
-  session.dirty = true;
-  session.editors.add(userId);
-  session.lastEditor = userId;
-  await session.save();
-  const saved = !session.dirty && session.authority === authority;
-  if (session.clients.size === 0 && !session.dirty) {
-    // A saved import isn't kept: its one step can be the whole document.
-    if (saved) forgetSession(pageId, pending);
-    else releaseSession(pageId, pending, session);
-  }
-  // A failed save stays in memory for the next save attempt; report it.
-  if (!saved) throw new Error("Saving the page failed");
-  return true;
 };
 
 /** Saves every open document (shutdown). */

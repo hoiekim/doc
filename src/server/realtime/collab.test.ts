@@ -70,6 +70,34 @@ const untilStored = async (pageId: string, version: number) => {
   throw new Error(`the page never saved version ${version}`);
 };
 
+/** Runs `statement` in a transaction that keeps its locks until the returned function is called. */
+const hold = async (statement: string) => {
+  let release = () => {};
+  let done: Promise<unknown> = Promise.resolve();
+  await new Promise<void>((locked, failed) => {
+    done = sql.begin(async (tx) => {
+      await tx.unsafe(statement);
+      locked();
+      await new Promise<void>((resolve) => (release = resolve));
+    });
+    done.catch(failed);
+  });
+  return async () => {
+    release();
+    await done;
+  };
+};
+
+/** Waits until a query waits on a lock. */
+const untilBlocked = async () => {
+  for (let i = 0; i < 100; i++) {
+    const [row] = await sql`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+    if (row.n > 0) return;
+    await Bun.sleep(20);
+  }
+  throw new Error("nothing waited on the lock");
+};
+
 /**
  * `b` drops off at version 0, then `a` adds a "!" and leaves too, so the
  * page's session has nobody in it and `b` is one step behind.
@@ -363,33 +391,80 @@ describe("realtime collaboration", () => {
   test("an import still saving when a kept session's time runs out keeps it for an editor who joins", async () => {
     const keepMs = idleSession.keepMs;
     idleSession.keepMs = 1000;
-    let unlock = () => {};
-    let lock: Promise<unknown> = Promise.resolve();
+    let unlock = async () => {};
     try {
       const page = await editAfterBothLeave();
       // Hold the page's row, so the import's save waits while the time runs out.
-      await new Promise<void>((locked) => {
-        lock = sql.begin(async (tx) => {
-          await tx`SELECT id FROM pages WHERE id = ${page.id} FOR UPDATE`;
-          locked();
-          await new Promise<void>((resolve) => (unlock = resolve));
-        });
-      });
+      unlock = await hold(`SELECT id FROM pages WHERE id = '${page.id}' FOR UPDATE`);
       const imported = owner.post(`/pages/${page.id}/content`, { content: doc("imported") });
       await Bun.sleep(idleSession.keepMs + 200);
       const e = await connect(owner);
       e.send({ t: "join", pageId: page.id, version: 1, clientId: "e" });
       expect(await e.next((m) => m.t === "joined")).toMatchObject({ version: 1 });
       expect(await e.next((m) => m.t === "steps")).toMatchObject({ version: 2, clientIds: ["server"] });
-      unlock();
+      await unlock();
       expect((await imported).status).toBe(200);
       e.send(exclaim(page.id, 2, 9, "e"));
       expect(await e.next((m) => m.t === "steps")).toMatchObject({ version: 3, clientIds: ["e"] });
       e.ws.close();
     } finally {
-      unlock();
-      await lock;
+      await unlock();
       idleSession.keepMs = keepMs;
     }
   }, 15_000);
+
+  test("a session an editor came back to outlives its time", async () => {
+    const keepMs = idleSession.keepMs;
+    idleSession.keepMs = 1000;
+    try {
+      const page = await editAfterBothLeave();
+      const b = await connect(owner);
+      b.send({ t: "join", pageId: page.id, version: 0, clientId: "b" });
+      await b.next((m) => m.t === "joined");
+      await b.next((m) => m.t === "steps");
+      await Bun.sleep(idleSession.keepMs + 200);
+      b.send(exclaim(page.id, 1, 7, "b"));
+      expect(await b.next((m) => m.t === "steps")).toMatchObject({ version: 2, clientIds: ["b"] });
+      b.ws.close();
+    } finally {
+      idleSession.keepMs = keepMs;
+    }
+  }, 15_000);
+
+  test("a refused import leaves a kept session's history", async () => {
+    const page = await editAfterBothLeave();
+    // Text straight in the document doesn't fit it.
+    const res = await owner.post(`/pages/${page.id}/content`, { content: { type: "doc", content: [{ type: "text", text: "x" }] } });
+    expect(res.status).toBe(400);
+    const b = await connect(owner);
+    b.send({ t: "join", pageId: page.id, version: 0, clientId: "b" });
+    const joined = await b.next((m) => m.t === "joined");
+    expect(joined).toMatchObject({ version: 0 });
+    expect(joined).not.toHaveProperty("doc");
+    expect(await b.next((m) => m.t === "steps")).toMatchObject({ version: 1, clientIds: ["a"] });
+    b.ws.close();
+  });
+
+  test("an editor whose socket closes while it joins isn't left in the page", async () => {
+    const page = await createPage();
+    const ghost = await connect(owner);
+    const b = await connect(owner);
+    // Hold the pages table, so the join waits until its socket has closed.
+    const unlock = await hold("LOCK TABLE pages IN ACCESS EXCLUSIVE MODE");
+    try {
+      ghost.send({ t: "join", pageId: page.id, version: 0, clientId: "ghost" });
+      await untilBlocked();
+      ghost.ws.close();
+      await Bun.sleep(100);
+    } finally {
+      await unlock();
+    }
+    // Long enough for the join to finish.
+    await Bun.sleep(300);
+    b.send({ t: "join", pageId: page.id, version: 0, clientId: "b" });
+    await b.next((m) => m.t === "joined");
+    const presence = await b.next((m) => m.t === "presence");
+    expect((presence.users as { clientId: string }[]).map((u) => u.clientId)).toEqual(["b"]);
+    b.ws.close();
+  });
 });
