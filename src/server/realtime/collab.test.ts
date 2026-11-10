@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sql } from "server/db";
 import { doc, startTestServer, type Client, type TestContext } from "server/test-helpers";
-import { flushAll } from "./collab";
+import { flushAll, idleSession } from "./collab";
 
 let t: TestContext;
 let owner: Client;
@@ -50,6 +50,44 @@ const connect = async (client: Client) => {
 const createPage = async (content = doc("hello")) => {
   const res = await owner.post("/pages", { spaceId, title: "Collab", content });
   return res.body.data.page as { id: string; slugId: string; docVersion: number };
+};
+
+const exclaim = (pageId: string, version: number, from: number, clientId = "a") => ({
+  t: "steps",
+  pageId,
+  version,
+  clientId,
+  steps: [{ stepType: "replace", from, to: from, slice: [{ t: "!" }] }],
+});
+
+/** Waits for the page to be stored at `version`, and for its session to settle. */
+const untilStored = async (pageId: string, version: number) => {
+  for (let i = 0; i < 100; i++) {
+    const [row] = await sql`SELECT doc_version FROM pages WHERE id = ${pageId}`;
+    if (Number(row.doc_version) === version) return Bun.sleep(100);
+    await Bun.sleep(50);
+  }
+  throw new Error(`the page never saved version ${version}`);
+};
+
+/**
+ * `b` drops off at version 0, then `a` adds a "!" and leaves too, so the
+ * page's session has nobody in it and `b` is one step behind.
+ */
+const editAfterBothLeave = async () => {
+  const page = await createPage();
+  const a = await connect(owner);
+  const b = await connect(owner);
+  a.send({ t: "join", pageId: page.id, version: 0, clientId: "a" });
+  b.send({ t: "join", pageId: page.id, version: 0, clientId: "b" });
+  await a.next((m) => m.t === "joined");
+  await b.next((m) => m.t === "joined");
+  b.ws.close();
+  a.send(exclaim(page.id, 0, 6));
+  await a.next((m) => m.t === "steps");
+  a.ws.close();
+  await untilStored(page.id, 1);
+  return page;
 };
 
 describe("realtime collaboration", () => {
@@ -274,4 +312,41 @@ describe("realtime collaboration", () => {
     }
     a.ws.close();
   }, 15_000);
+
+  test("an editor who reconnects after everyone left catches up step by step", async () => {
+    const page = await editAfterBothLeave();
+    const b = await connect(owner);
+    b.send({ t: "join", pageId: page.id, version: 0, clientId: "b" });
+    const joined = await b.next((m) => m.t === "joined");
+    expect(joined).toMatchObject({ version: 0 });
+    expect(joined).not.toHaveProperty("doc");
+    expect(await b.next((m) => m.t === "steps")).toMatchObject({ version: 1, clientIds: ["a"] });
+    b.ws.close();
+  });
+
+  test("a session nobody has open is let go after a while", async () => {
+    const keepMs = idleSession.keepMs;
+    idleSession.keepMs = 200;
+    try {
+      const page = await editAfterBothLeave();
+      await Bun.sleep(400);
+      const b = await connect(owner);
+      b.send({ t: "join", pageId: page.id, version: 0, clientId: "b" });
+      expect(await b.next((m) => m.t === "joined")).toMatchObject({ version: 1, doc: doc("hello!") });
+      b.ws.close();
+    } finally {
+      idleSession.keepMs = keepMs;
+    }
+  });
+
+  test("a kept session is loaded again when the page was saved elsewhere", async () => {
+    const page = await editAfterBothLeave();
+    await sql`UPDATE pages SET content = ${doc("elsewhere")}::jsonb, doc_version = 7 WHERE id = ${page.id}`;
+    const b = await connect(owner);
+    b.send({ t: "join", pageId: page.id, version: 1, clientId: "b" });
+    expect(await b.next((m) => m.t === "joined")).toMatchObject({ version: 7, doc: doc("elsewhere") });
+    b.send(exclaim(page.id, 7, 10, "b"));
+    expect(await b.next((m) => m.t === "steps")).toMatchObject({ version: 8 });
+    b.ws.close();
+  });
 });

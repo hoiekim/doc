@@ -5,7 +5,7 @@ import { Authority } from "common/editor/collab";
 import type { Step } from "common/editor/steps";
 import { contentSize, nodesToItems } from "common/editor/tokens";
 import { isUuid } from "common/ids";
-import { canEditPage, canReadPage, loadPageForCollab, savePageContent } from "server/lib/pages";
+import { canEditPage, canReadPage, loadPageForCollab, savePageContent, storedDocVersion } from "server/lib/pages";
 import { log } from "server/lib/logger";
 import { registry, type Socket } from "./hub";
 
@@ -13,6 +13,14 @@ const SAVE_DEBOUNCE_MS = 2_000;
 const SAVE_MAX_DELAY_MS = 10_000;
 const MAX_STEPS_PER_MESSAGE = 2_000;
 const PRESENCE_COLORS = ["#e5484d", "#f76b15", "#ffb224", "#30a46c", "#12a594", "#0090ff", "#6e56cf", "#d6409f"];
+/**
+ * How long a page's session outlives its last editor, in milliseconds. An
+ * editor that reconnects within it catches up from the session's step
+ * history. A session loaded again has none, so an editor that had fallen
+ * behind would get the whole document and drop what it hadn't sent yet.
+ * Tests shorten it.
+ */
+export const idleSession = { keepMs: 60_000 };
 
 interface Client {
   clientId: string;
@@ -32,6 +40,8 @@ class PageSession {
   private firstDirtyAt = 0;
   private saving: Promise<void> | null = null;
   private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set while the session is kept with nobody in it (see `idleSession`). */
+  idleTimer: ReturnType<typeof setTimeout> | null = null;
   /** The stored version the next save replaces. */
   private savedVersion: number;
 
@@ -81,6 +91,12 @@ class PageSession {
         this.saving = null;
       });
     await this.saving;
+  }
+
+  /** Whether the stored page is still the version this session's next save replaces. */
+  async isCurrent(): Promise<boolean> {
+    while (this.saving) await this.saving;
+    return (await storedDocVersion(this.pageId)) === this.savedVersion;
   }
 
   /**
@@ -144,6 +160,40 @@ const openSession = (pageId: string): Promise<PageSession | null> => {
   return pending;
 };
 
+/**
+ * The page's session for an editor joining it. One kept with nobody in it may
+ * be stale: if this copy lost the lease and got it back, another copy may have
+ * saved the page in between. Then the page is loaded again.
+ */
+const sessionToJoin = async (pageId: string): Promise<PageSession | null> => {
+  for (;;) {
+    const pending = openSession(pageId);
+    const session = await pending;
+    if (session?.idleTimer && !(await session.isCurrent())) {
+      if (sessions.get(pageId) === pending) sessions.delete(pageId);
+      continue;
+    }
+    // The session may have been let go while this waited.
+    if (sessions.get(pageId) === pending) return session;
+  }
+};
+
+/**
+ * Lets go of a session nobody has open, after `idleSession.keepMs` if it has
+ * accepted steps: without any, its history has nothing to catch up from.
+ */
+const releaseSession = (pageId: string, pending: Promise<PageSession | null>, session: PageSession) => {
+  if (session.idleTimer) clearTimeout(session.idleTimer);
+  session.idleTimer = null;
+  const release = () => {
+    session.idleTimer = null;
+    if (session.clients.size === 0 && !session.dirty && sessions.get(pageId) === pending) sessions.delete(pageId);
+  };
+  if (session.lastEditor === null) return release();
+  session.idleTimer = setTimeout(release, idleSession.keepMs);
+  session.idleTimer.unref();
+};
+
 const colorFor = (userId: string) => {
   let hash = 0;
   for (const ch of userId) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
@@ -197,11 +247,13 @@ export const joinPage = async (ws: Socket, rawPageId: unknown, version: unknown,
     return;
   }
   const readOnly = !(await canEditPage(userId, pageId));
-  const session = await openSession(pageId);
+  const session = await sessionToJoin(pageId);
   if (!session) {
     send(ws, { t: "error", pageId, message: "Page not found" });
     return;
   }
+  if (session.idleTimer) clearTimeout(session.idleTimer);
+  session.idleTimer = null;
   const existing = session.clients.get(ws);
   session.clients.set(ws, {
     clientId: typeof clientId === "string" && clientId.length <= 64 ? clientId : (existing?.clientId ?? ""),
@@ -229,7 +281,7 @@ export const leavePage = async (ws: Socket, rawPageId: unknown) => {
   if (session.clients.size === 0) {
     await session.save();
     // Someone may have re-joined while saving.
-    if (session.clients.size === 0 && !session.dirty) sessions.delete(pageId);
+    if (session.clients.size === 0 && !session.dirty) releaseSession(pageId, pending, session);
   }
 };
 
