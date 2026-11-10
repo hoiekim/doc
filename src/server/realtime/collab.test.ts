@@ -359,4 +359,37 @@ describe("realtime collaboration", () => {
     expect(row.content).toEqual(doc("imported"));
     expect(Number(row.doc_version)).toBe(8);
   });
+
+  test("an import still saving when a kept session's time runs out keeps it for an editor who joins", async () => {
+    const keepMs = idleSession.keepMs;
+    idleSession.keepMs = 1000;
+    let unlock = () => {};
+    let lock: Promise<unknown> = Promise.resolve();
+    try {
+      const page = await editAfterBothLeave();
+      // Hold the page's row, so the import's save waits while the time runs out.
+      await new Promise<void>((locked) => {
+        lock = sql.begin(async (tx) => {
+          await tx`SELECT id FROM pages WHERE id = ${page.id} FOR UPDATE`;
+          locked();
+          await new Promise<void>((resolve) => (unlock = resolve));
+        });
+      });
+      const imported = owner.post(`/pages/${page.id}/content`, { content: doc("imported") });
+      await Bun.sleep(idleSession.keepMs + 200);
+      const e = await connect(owner);
+      e.send({ t: "join", pageId: page.id, version: 1, clientId: "e" });
+      expect(await e.next((m) => m.t === "joined")).toMatchObject({ version: 1 });
+      expect(await e.next((m) => m.t === "steps")).toMatchObject({ version: 2, clientIds: ["server"] });
+      unlock();
+      expect((await imported).status).toBe(200);
+      e.send(exclaim(page.id, 2, 9, "e"));
+      expect(await e.next((m) => m.t === "steps")).toMatchObject({ version: 3, clientIds: ["e"] });
+      e.ws.close();
+    } finally {
+      unlock();
+      await lock;
+      idleSession.keepMs = keepMs;
+    }
+  }, 15_000);
 });

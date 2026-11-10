@@ -160,22 +160,38 @@ const openSession = (pageId: string): Promise<PageSession | null> => {
   return pending;
 };
 
+/** Forgets a page's session, unless another has replaced it in the meantime. */
+const forgetSession = (pageId: string, pending: Promise<PageSession | null>) => {
+  if (sessions.get(pageId) === pending) sessions.delete(pageId);
+};
+
+/** Stops a kept session's release: an editor or an import is taking it over. */
+const takeOver = (session: PageSession) => {
+  if (session.idleTimer) clearTimeout(session.idleTimer);
+  session.idleTimer = null;
+};
+
 /**
- * The page's session, for an editor joining it or an import. One kept with
- * nobody in it may be stale: if this copy lost the lease and got it back,
- * another copy may have saved the page in between. Then the page is loaded
- * again.
+ * The page's session, for an editor joining it or an import, which take it
+ * over as soon as this returns. One kept with nobody in it may be stale: if
+ * this copy lost the lease and got it back, another copy may have saved the
+ * page in between. Then the page is loaded again.
  */
-const currentSession = async (pageId: string): Promise<PageSession | null> => {
+const currentSession = async (pageId: string) => {
   for (;;) {
     const pending = openSession(pageId);
     const session = await pending;
     if (session?.idleTimer && !(await session.isCurrent())) {
-      if (sessions.get(pageId) === pending) sessions.delete(pageId);
+      // Unless someone took it over while this checked: an import's save can
+      // make the stored version look newer for a moment.
+      if (session.idleTimer) {
+        takeOver(session);
+        forgetSession(pageId, pending);
+      }
       continue;
     }
     // The session may have been let go while this waited.
-    if (sessions.get(pageId) === pending) return session;
+    if (sessions.get(pageId) === pending) return { pending, session };
   }
 };
 
@@ -184,11 +200,10 @@ const currentSession = async (pageId: string): Promise<PageSession | null> => {
  * accepted steps: without any, its history has nothing to catch up from.
  */
 const releaseSession = (pageId: string, pending: Promise<PageSession | null>, session: PageSession) => {
-  if (session.idleTimer) clearTimeout(session.idleTimer);
-  session.idleTimer = null;
+  takeOver(session);
   const release = () => {
     session.idleTimer = null;
-    if (session.clients.size === 0 && !session.dirty && sessions.get(pageId) === pending) sessions.delete(pageId);
+    if (session.clients.size === 0 && !session.dirty) forgetSession(pageId, pending);
   };
   if (session.lastEditor === null) return release();
   session.idleTimer = setTimeout(release, idleSession.keepMs);
@@ -248,13 +263,12 @@ export const joinPage = async (ws: Socket, rawPageId: unknown, version: unknown,
     return;
   }
   const readOnly = !(await canEditPage(userId, pageId));
-  const session = await currentSession(pageId);
+  const { session } = await currentSession(pageId);
   if (!session) {
     send(ws, { t: "error", pageId, message: "Page not found" });
     return;
   }
-  if (session.idleTimer) clearTimeout(session.idleTimer);
-  session.idleTimer = null;
+  takeOver(session);
   const existing = session.clients.get(ws);
   session.clients.set(ws, {
     clientId: typeof clientId === "string" && clientId.length <= 64 ? clientId : (existing?.clientId ?? ""),
@@ -349,14 +363,16 @@ export const disconnect = async (ws: Socket) => {
  * editors receive it as a regular step.
  */
 export const replacePageContent = async (pageId: string, content: Node, userId: string) => {
-  const session = await currentSession(pageId);
+  const { pending, session } = await currentSession(pageId);
   if (!session) return false;
+  // A kept session's timer would otherwise let it go while this saves.
+  takeOver(session);
   const { authority } = session;
   const size = contentSize(authority.doc, schema);
   const step: Step = { stepType: "replace", from: 0, to: size, slice: nodesToItems(content.content ?? [], schema) };
   const accepted = authority.receive(authority.version, [step], "server");
   if (!accepted) {
-    if (session.clients.size === 0 && !session.dirty) sessions.delete(pageId);
+    if (session.clients.size === 0 && !session.dirty) releaseSession(pageId, pending, session);
     throw new Error(authority.rejection === "too-large" ? "too-large" : "invalid");
   }
   session.broadcast({ t: "steps", pageId, version: authority.version, steps: accepted, clientIds: ["server"] });
@@ -364,9 +380,14 @@ export const replacePageContent = async (pageId: string, content: Node, userId: 
   session.editors.add(userId);
   session.lastEditor = userId;
   await session.save();
+  const saved = !session.dirty && session.authority === authority;
+  if (session.clients.size === 0 && !session.dirty) {
+    // A saved import isn't kept: its one step can be the whole document.
+    if (saved) forgetSession(pageId, pending);
+    else releaseSession(pageId, pending, session);
+  }
   // A failed save stays in memory for the next save attempt; report it.
-  if (session.dirty || session.authority !== authority) throw new Error("Saving the page failed");
-  if (session.clients.size === 0) sessions.delete(pageId);
+  if (!saved) throw new Error("Saving the page failed");
   return true;
 };
 
