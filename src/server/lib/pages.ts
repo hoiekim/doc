@@ -145,6 +145,12 @@ export const loadPageForCollab = async (
   return { content: row.content, docVersion: Number(row.doc_version), spaceId: row.space_id, deletedAt: row.deleted_at };
 };
 
+/** The stored document version, or null when the page is gone. */
+export const storedDocVersion = async (pageId: string): Promise<number | null> => {
+  const [row] = await sql`SELECT doc_version FROM pages WHERE id = ${pageId}`;
+  return row ? Number(row.doc_version) : null;
+};
+
 /** Ancestors of a page from the root down, ending with the page itself. */
 export const breadcrumbs = async (pageId: string, db: Db = sql): Promise<TreeItem[]> => {
   const rows = await db`

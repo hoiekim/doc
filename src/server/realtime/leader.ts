@@ -22,10 +22,32 @@ let leadUntil = 0;
 let running = false;
 let leading = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** Fires when the lease would run out, since a renewal can hang past it. */
+let lapse: ReturnType<typeof setTimeout> | null = null;
 /** The latest claim. A release waits for it, or the claim could land after and put the row back. */
 let claiming: Promise<void> = Promise.resolve();
+let onLost: (() => void) | null = null;
 
 export const isLeader = () => performance.now() < leadUntil;
+
+/** Registers what to do when this copy stops leading while it runs: its lease ran out or was taken. */
+export const onLeadLost = (listener: () => void) => {
+  onLost = listener;
+};
+
+/** Notices when leading starts or stops: after each claim, and when the lease runs out. */
+const check = () => {
+  if (lapse) clearTimeout(lapse);
+  lapse = null;
+  if (isLeader() !== leading) {
+    leading = !leading;
+    log.info(leading ? "leading realtime" : "no longer leading realtime");
+    if (!leading) onLost?.();
+  }
+  if (!leading) return;
+  lapse = setTimeout(check, leadUntil - performance.now() + 1);
+  lapse.unref();
+};
 
 const claim = async () => {
   const asked = performance.now();
@@ -41,10 +63,7 @@ const claim = async () => {
 const tick = async () => {
   claiming = claim().catch((error) => log.error("claiming the realtime lease failed", error));
   await claiming;
-  if (isLeader() !== leading) {
-    leading = !leading;
-    log.info(leading ? "leading realtime" : "no longer leading realtime");
-  }
+  check();
   if (!running) return;
   timer = setTimeout(() => void tick(), isLeader() ? RENEW_MS : POLL_MS);
   timer.unref();
@@ -66,6 +85,8 @@ export const stopLeading = () => {
   leading = false;
   if (timer) clearTimeout(timer);
   timer = null;
+  if (lapse) clearTimeout(lapse);
+  lapse = null;
 };
 
 export const releaseLease = async () => {
