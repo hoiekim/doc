@@ -391,12 +391,30 @@ describe("re-checking access", () => {
     expect(refreshes()).toBe(1);
   });
 
-  test("serves the request while the provider is unreachable, and asks again on the next", async () => {
+  test("serves the request while the provider is unreachable, and backs off before asking again", async () => {
     await due(30);
     fake.token = () => json(503, { error: "temporarily_unavailable" });
     expect((await carol.get("/me")).status).toBe(200);
+    // Within the minute after a failed re-check, requests don't wait on the provider again.
+    expect((await carol.get("/me")).status).toBe(200);
+    expect(refreshes()).toBe(1);
+    // Once the back-off is over (dropped here), the next request asks again.
+    forgetAuthClient();
     expect((await carol.get("/me")).status).toBe(200);
     expect(refreshes()).toBe(2);
+  });
+
+  test("ends the session within its back-off, too, once an hour has passed since the re-check", async () => {
+    forgetAuthClient();
+    await due(30);
+    fake.token = () => json(503, { error: "temporarily_unavailable" });
+    expect((await carol.get("/me")).status).toBe(200);
+    await due(61);
+    expect((await carol.get("/me")).status).toBe(401);
+    expect(refreshes()).toBe(1);
+    carol = (await ssoSignIn({ sub: "usr_carol", username: "carol", name: "Carol" })).client;
+    [{ id: sessionId }] = await sql`SELECT s.id FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.auth_sub = 'usr_carol'`;
+    forgetAuthClient();
   });
 
   test("ends the session once the provider has been unreachable for an hour past the re-check", async () => {
@@ -415,6 +433,16 @@ describe("re-checking access", () => {
     expect((await carol.get("/me")).status).toBe(401);
     expect(await sql`SELECT 1 FROM sessions WHERE id = ${sessionId}`).toHaveLength(0);
     expect(await settle(socket.closed)).toBe(4001);
+  });
+
+  test("ends the session when the refreshed token names someone else", async () => {
+    carol = (await ssoSignIn({ sub: "usr_carol", username: "carol", name: "Carol" })).client;
+    [{ id: sessionId }] = await sql`SELECT s.id FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.auth_sub = 'usr_carol'`;
+    await due(1);
+    refreshesAs({ sub: "usr_mallory", username: "carol", name: "Carol", role: "owner" });
+    expect((await carol.get("/me")).status).toBe(401);
+    expect(await sql`SELECT 1 FROM sessions WHERE id = ${sessionId}`).toHaveLength(0);
+    expect((await userBySub("usr_carol")).role).not.toBe("owner");
   });
 });
 
@@ -447,9 +475,13 @@ describe("events from the provider", () => {
     const user = await userBySub("usr_ivy");
     expect(user.deactivated_at).not.toBeNull();
     expect(await sql`SELECT 1 FROM sessions WHERE user_id = ${user.id}`).toHaveLength(0);
-    // Access given back: the deactivation is lifted.
+    // A grant only sets the role: events can arrive out of order, so it can't
+    // lift a deactivation. The next sign-in, which the provider gates, does.
     expect((await postEvent(eventToken({ "access.changed": { sub: "usr_ivy", role: "member" } }))).status).toBe(202);
-    expect(await userBySub("usr_ivy")).toMatchObject({ role: "member", deactivated_at: null });
+    expect((await userBySub("usr_ivy")).role).toBe("member");
+    expect((await userBySub("usr_ivy")).deactivated_at).not.toBeNull();
+    await ssoSignIn({ sub: "usr_ivy", username: "ivy" });
+    expect((await userBySub("usr_ivy")).deactivated_at).toBeNull();
   });
 
   test("user.disabled deactivates the user until they sign in again", async () => {
@@ -493,6 +525,24 @@ describe("events from the provider", () => {
       fake.keysDown = false;
       forgetAuthClient();
     }
+  });
+});
+
+describe("a linked person's profile", () => {
+  test("is marked, and its name and email can't be changed here", async () => {
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    const { client } = await ssoSignIn({ sub: "usr_kim", username: "kim", name: "Kim" });
+    const me = (await client.get("/me")).body.data.user;
+    expect(me.ssoManaged).toBe(true);
+    for (const change of [{ name: "Someone else" }, { email: "kim.other@example.com", currentPassword: "x" }]) {
+      const res = await client.post("/me/update", change);
+      expect(res.status).toBe(403);
+      expect(res.body.error!.code).toBe("sso_managed");
+    }
+    // Saving the same values, and everything else, still works.
+    const saved = await client.post("/me/update", { name: me.name, email: me.email, timezone: "Europe/Berlin" });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.user).toMatchObject({ name: "Kim", timezone: "Europe/Berlin", ssoManaged: true });
   });
 });
 

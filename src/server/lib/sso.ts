@@ -131,9 +131,10 @@ export const authClient = (): AuthClient | null => {
   return cached.client;
 };
 
-/** Drops the cached client, with its discovery document and keys. For tests. */
+/** Drops the cached client, with its discovery document and keys, and the re-check backoff. For tests. */
 export const forgetAuthClient = () => {
   cached = null;
+  retryAfter.clear();
 };
 
 /** What the browser needs to know before sign-in. */
@@ -290,6 +291,24 @@ export interface DueRecheck {
 
 const rechecks = new Map<string, Promise<UserRow | null>>();
 
+/**
+ * After the provider couldn't answer a session's re-check, how long that
+ * session is served without asking again. Without it, every request of the
+ * session would wait out the client's timeout while the provider is
+ * unreachable. Kept per copy of the server, in memory: at most one request
+ * per session and copy pays the timeout each interval.
+ */
+const RETRY_MS = 60 * 1000;
+const retryAfter = new Map<string, number>();
+/** Bounds the map when sessions that last failed never come back. */
+const RETRY_MAX = 10_000;
+
+const backOff = (sessionId: string) => {
+  retryAfter.delete(sessionId);
+  retryAfter.set(sessionId, Date.now() + RETRY_MS);
+  if (retryAfter.size > RETRY_MAX) retryAfter.delete(retryAfter.keys().next().value!);
+};
+
 const recheck = async (auth: AuthClient, due: DueRecheck, user: UserRow): Promise<UserRow | null> => {
   // Without a refresh token the provider can't be asked again, so the session lasts until its first re-check.
   if (!due.refreshToken) {
@@ -310,8 +329,10 @@ const recheck = async (auth: AuthClient, due: DueRecheck, user: UserRow): Promis
       await endSession(due.sessionId);
       return null;
     }
+    backOff(due.sessionId);
     return user;
   }
+  retryAfter.delete(due.sessionId);
   if (refreshed.claims.sub !== user.auth_sub) {
     await endSession(due.sessionId);
     return null;
@@ -333,6 +354,14 @@ export const recheckSession = (due: DueRecheck, user: UserRow): Promise<UserRow 
   const auth = authClient();
   // Turned off since the session started: nothing can re-check it.
   if (!auth) return endSession(due.sessionId).then(() => null);
+  const waitUntil = retryAfter.get(due.sessionId);
+  if (waitUntil !== undefined && Date.now() < waitUntil) {
+    // The provider couldn't answer moments ago: serve without asking, still
+    // within the hour past the original re-check.
+    if (Date.now() <= due.recheckAt.getTime() + STALE_MS) return Promise.resolve(user);
+    retryAfter.delete(due.sessionId);
+    return endSession(due.sessionId).then(() => null);
+  }
   let pending = rechecks.get(due.sessionId);
   if (!pending) {
     pending = recheck(auth, due, user).finally(() => rechecks.delete(due.sessionId));
@@ -366,9 +395,10 @@ export const applyEvent = async (event: AuthEvent) => {
     case "access.changed":
       if (!event.sub) return;
       if (typeof event.role !== "string") return deactivate(event.sub);
-      await sql`
-        UPDATE users SET role = ${workspaceRole(event.role)}, deactivated_at = NULL, updated_at = now()
-        WHERE auth_sub = ${event.sub}`;
+      // Only the role: events can arrive out of order, so a grant must not lift
+      // a deactivation a later disable or removal made. The next sign-in,
+      // which the provider gates, lifts it (`applyClaims`).
+      await sql`UPDATE users SET role = ${workspaceRole(event.role)}, updated_at = now() WHERE auth_sub = ${event.sub}`;
       return;
     case "user.disabled":
     case "user.deleted":

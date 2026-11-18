@@ -1,4 +1,5 @@
 import type { Member, User, UserPreferences, UserRef, WorkspaceRole } from "common/api-types";
+import { config } from "server/config";
 import { sql } from "server/db";
 
 export interface UserRow {
@@ -34,6 +35,10 @@ export const toUser = (row: UserRow, viewerId?: string): User => ({
   createdAt: iso(row.created_at)!,
   lastLoginAt: iso(row.last_login_at),
 });
+
+/** `ssoManaged`, while single sign-on is on; nothing otherwise, so answers without it are unchanged. */
+export const ssoManagedField = (row: Pick<UserRow, "auth_sub">): Pick<User, "ssoManaged"> =>
+  config.sso ? { ssoManaged: row.auth_sub !== null } : {};
 
 export const toMember = (row: UserRow, viewerId: string): Member => ({
   ...toUser(row, viewerId),

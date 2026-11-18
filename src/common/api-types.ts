@@ -30,12 +30,15 @@ export interface User {
   preferences: UserPreferences;
   createdAt: string;
   lastLoginAt: string | null;
+  /**
+   * Present when single sign-on is on, for the current user and in the member
+   * list: the identity provider manages this person's name, email, role and access.
+   */
+  ssoManaged?: boolean;
 }
 
 export interface Member extends User {
   deactivatedAt: string | null;
-  /** Present when single sign-on is on: the identity provider manages this member's role and access. */
-  ssoManaged?: boolean;
 }
 
 /** Compact user reference embedded in pages, comments, versions and notifications. */

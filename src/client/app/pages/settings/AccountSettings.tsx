@@ -7,8 +7,10 @@ import { SettingsSection } from "./SettingsPage";
 
 export const AccountSettings = () => {
   const { user, setUser, sso } = useApp();
-  // With single sign-on as the only way in, the identity provider keeps the name, email and password.
-  const managed = sso.enabled && !sso.localLogin;
+  // The identity provider keeps a linked person's name and email, and with
+  // single sign-on as the only way in there is no password to change either.
+  const profileManaged = sso.enabled && user.ssoManaged === true;
+  const passwordsOff = sso.enabled && !sso.localLogin;
   const toast = useToast();
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState(user.email);
@@ -103,17 +105,17 @@ export const AccountSettings = () => {
         </div>
         <form className="form" onSubmit={saveProfile}>
           <Field label="Name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={50} disabled={managed} />
+            <Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={50} disabled={profileManaged} />
           </Field>
-          <Field label="Email" hint={managed ? "Your name and email come from your identity provider." : undefined}>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={managed} />
+          <Field label="Email" hint={profileManaged ? "Your name and email come from your identity provider." : undefined}>
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={profileManaged} />
           </Field>
           {email.trim() !== user.email && (
             <Field label="Current password" hint="Required to change your email">
               <Input type="password" value={emailPassword} onChange={(e) => setEmailPassword(e.target.value)} required autoComplete="current-password" />
             </Field>
           )}
-          {!managed && (
+          {!profileManaged && (
             <div>
               <Button variant="primary" type="submit" loading={busy === "profile"}>
                 Save profile
@@ -123,7 +125,7 @@ export const AccountSettings = () => {
         </form>
       </SettingsSection>
 
-      {!managed && (
+      {!passwordsOff && (
         <SettingsSection title="Password">
           <form className="form" onSubmit={changePassword}>
             <Field label="Current password">

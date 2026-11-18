@@ -1,5 +1,4 @@
 import type { WorkspaceRole } from "common/api-types";
-import { config } from "server/config";
 import { sql } from "server/db";
 import { revokeUserSessions } from "server/lib/auth";
 import { removeImage } from "server/lib/files";
@@ -7,7 +6,7 @@ import { badRequest, forbidden, get, notFound, post, readJson } from "server/lib
 import { requireWorkspaceAdmin } from "server/lib/permissions";
 import { escapeLike } from "server/lib/search";
 import { requireLocallyManaged } from "server/lib/sso";
-import { findUserById, toMember, toUser, type UserRow } from "server/lib/users";
+import { findUserById, ssoManagedField, toMember, toUser, type UserRow } from "server/lib/users";
 import { Input, input } from "server/lib/validate";
 import { disconnectUser, membershipChanged } from "server/realtime/hub";
 import type { AuthUser } from "server/lib/auth";
@@ -43,8 +42,7 @@ export const routes = [
             .n,
         );
     // With single sign-on on, members it manages are marked, so admins see why they can't change them here.
-    const sso = config.sso !== null;
-    const items = rows.map((row: UserRow) => ({ ...toMember(row, ctx.user.id), ...(sso ? { ssoManaged: row.auth_sub !== null } : {}) }));
+    const items = rows.map((row: UserRow) => ({ ...toMember(row, ctx.user.id), ...ssoManagedField(row) }));
     return { items, total };
   }),
 

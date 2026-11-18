@@ -141,11 +141,14 @@ verified email, are copied from the provider at each sign-in.
   The workspace's allowed email domains apply to doc's own invitations and email changes, not to these sign-ins.
 - A session started through the provider is re-checked with it every 10 minutes, with the refresh token the
   provider issued at sign-in (a session without one ends at its first re-check). When the provider is
-  unreachable, the session is served for up to an hour past its re-check, then ends. A session the provider
-  ended, or a user it removed, disabled or deleted, is signed out at once, and their open sockets close within a
-  minute on every copy of the server; removal, disabling and deletion also deactivate the member until the
-  provider gives access again. Doc never deletes a user's data on its own: a deleted user's pages and comments
-  stay, and an admin can remove the member in **Settings → Members**.
+  unreachable, the session is served for up to an hour past its re-check, then ends; after a re-check the provider
+  couldn't answer, the session's requests don't ask it again for a minute. A session the provider ended, or a user
+  it removed, disabled or deleted, is signed out at once, and their open sockets close within a minute on every copy
+  of the server; removal, disabling and deletion also deactivate the member until their next sign-in through the
+  provider. Doc never deletes a user's data on its own: a deleted user's pages and comments stay, and an admin can
+  remove the member in **Settings → Members**.
+- A linked person's name and email come from the provider: **Profile & security** shows them read-only, and
+  `/me/update` refuses to change them.
 - Signing out also revokes doc's refresh token and signs the browser out of the provider.
 
 **Turning it off.** Unset `AUTH_ISSUER` and restart. Password sign-in, invitations and member management work

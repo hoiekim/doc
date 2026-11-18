@@ -1,10 +1,11 @@
 import type { UserPreferences } from "common/api-types";
+import { config } from "server/config";
 import { sql } from "server/db";
 import { removeImage, saveImage } from "server/lib/files";
 import { HttpError, badRequest, conflict, formFile, get, post, readForm, readJson } from "server/lib/http";
 import { isWorkspaceAdmin } from "server/lib/permissions";
 import { getWorkspace } from "server/lib/spaces";
-import { findUserById, toUser, verifyPassword } from "server/lib/users";
+import { findUserById, ssoManagedField, toUser, verifyPassword } from "server/lib/users";
 import { EMAIL_RULE, NAME_RULE, input, normalizeEmail } from "server/lib/validate";
 
 const BOOLEAN_PREFERENCES = [
@@ -50,7 +51,7 @@ const validTimezone = (value: string) => {
 };
 
 export const routes = [
-  get("/me", async (ctx) => ({ user: toUser(ctx.user, ctx.user.id), workspace: await getWorkspace() })),
+  get("/me", async (ctx) => ({ user: { ...toUser(ctx.user, ctx.user.id), ...ssoManagedField(ctx.user) }, workspace: await getWorkspace() })),
 
   post("/me/update", async (ctx) => {
     const body = input(await readJson(ctx));
@@ -62,6 +63,18 @@ export const routes = [
     if (locale && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(locale)) throw badRequest("Invalid locale");
     if (timezone && !validTimezone(timezone)) throw badRequest("Invalid timezone");
     const preferences: Partial<UserPreferences> | null = preferencesInput ? parsePreferences(preferencesInput) : null;
+
+    // A linked person's name and email come from the identity provider, which
+    // copies them back at each sign-in and re-check: a change here would
+    // silently revert.
+    if (
+      config.sso &&
+      ctx.user.auth_sub &&
+      ((name !== undefined && name !== ctx.user.name) ||
+        (emailInput !== undefined && normalizeEmail(emailInput) !== ctx.user.email.toLowerCase()))
+    ) {
+      throw new HttpError(403, "sso_managed", "Your name and email come from your identity provider");
+    }
 
     let email: string | undefined;
     if (emailInput !== undefined) {
@@ -91,7 +104,7 @@ export const routes = [
         updated_at = now()
       WHERE id = ${ctx.user.id}`;
     const user = await findUserById(ctx.user.id);
-    return { user: toUser(user!, ctx.user.id) };
+    return { user: { ...toUser(user!, ctx.user.id), ...ssoManagedField(user!) } };
   }),
 
   post("/me/avatar", async (ctx) => {
