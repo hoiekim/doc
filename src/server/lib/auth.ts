@@ -3,7 +3,7 @@ import { token } from "common/ids";
 import { config } from "server/config";
 import { sql } from "server/db";
 import { unauthorized, type Context } from "./http";
-import { RECHECK_MS, recheckSession } from "./sso";
+import { RECHECK_MS, endSession, recheckSession } from "./sso";
 import type { UserRow } from "./users";
 
 export type AuthUser = UserRow;
@@ -85,6 +85,13 @@ interface SessionLookup {
 const sessionUser = async (row: Record<string, unknown>): Promise<AuthUser | null> => {
   const { session_id, session_last_seen_at, session_auth_sid, session_auth_refresh_token, session_auth_recheck_at, ...user } = row;
   const recheckAt = session_auth_recheck_at ? new Date(session_auth_recheck_at as Date) : null;
+  // Only sessions started through the provider have a re-check. A password
+  // session ends while single sign-on is the only way in, and a provider's
+  // session ends once single sign-on is turned off, since nothing can re-check it.
+  if (recheckAt ? config.sso === null : !config.localLogin) {
+    await endSession(session_id as string);
+    return null;
+  }
   if (!recheckAt || recheckAt.getTime() > Date.now()) return user as unknown as AuthUser;
   const due = { sessionId: session_id as string, refreshToken: (session_auth_refresh_token as string | null) ?? null, recheckAt };
   return recheckSession(due, user as unknown as AuthUser);

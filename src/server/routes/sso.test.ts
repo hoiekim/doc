@@ -3,6 +3,7 @@ import { createHash, generateKeyPairSync, sign as edSign, type KeyObject } from 
 import { sql } from "server/db";
 import { resetRateLimits } from "server/lib/ratelimit";
 import { forgetAuthClient } from "server/lib/sso";
+import { hashPassword } from "server/lib/users";
 import { checkSocketSessions } from "server/realtime/ws";
 import { startTestServer, type Client, type TestContext } from "server/test-helpers";
 
@@ -592,13 +593,30 @@ describe("turning single sign-on off again", () => {
     setEnv({});
     expect((await t.client().get("/auth/config")).body.data).toEqual({ sso: { enabled: false, localLogin: true } });
     expect((await t.client().get("/auth/login")).status).toBe(404);
-    const items = (await client.get("/members?limit=200")).body.data.items as Record<string, unknown>[];
+    // Nothing can re-check a session the provider started any more, so it ends.
+    expect((await client.get("/me")).status).toBe(401);
+    // As if the owner had set a password through doc's own reset.
+    await sql`UPDATE users SET password_hash = ${await hashPassword("owner-password-2")} WHERE auth_sub = 'usr_alice'`;
+    const owner = t.client();
+    expect((await owner.post("/auth/login", { email: "alice@example.com", password: "owner-password-2" })).status).toBe(200);
+    const items = (await owner.get("/members?limit=200")).body.data.items as Record<string, unknown>[];
     expect(items.every((m) => !("ssoManaged" in m))).toBe(true);
     const [ivy] = await sql`SELECT id FROM users WHERE auth_sub = 'usr_ivy'`;
-    expect((await client.post("/members/deactivate", { userId: ivy.id })).status).toBe(200);
-    // A session whose re-check is due goes on as a password session would.
-    await sql`UPDATE sessions SET auth_recheck_at = now() - interval '2 hours' WHERE user_id = ${aliceId}`;
-    expect((await client.get("/me")).status).toBe(200);
-    expect((await client.post("/auth/logout")).body.data).toEqual({});
+    expect((await owner.post("/members/deactivate", { userId: ivy.id })).status).toBe(200);
+    expect((await owner.post("/auth/logout")).body.data).toEqual({});
+  });
+});
+
+describe("password sessions", () => {
+  test("end once single sign-on is the only way in", async () => {
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    const local = t.client();
+    expect((await local.post("/auth/login", { email: "erin@example.com", password: "member-password" })).status).toBe(200);
+    expect((await local.get("/me")).status).toBe(200);
+    setEnv(SSO_ENV);
+    expect((await local.get("/me")).status).toBe(401);
+    setEnv({});
+    // Ended, not merely refused: turning single sign-on off doesn't bring it back.
+    expect((await local.get("/me")).status).toBe(401);
   });
 });

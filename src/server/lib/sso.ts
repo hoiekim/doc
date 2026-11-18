@@ -275,7 +275,8 @@ export const loginFailure = (error: unknown): SsoError => {
   return "login_failed";
 };
 
-const endSession = async (sessionId: string) => {
+/** Deletes a session and closes the sockets opened with it on this copy. */
+export const endSession = async (sessionId: string) => {
   await sql`DELETE FROM sessions WHERE id = ${sessionId}`;
   disconnectSessions([sessionId]);
 };
@@ -330,8 +331,8 @@ const recheck = async (auth: AuthClient, due: DueRecheck, user: UserRow): Promis
  */
 export const recheckSession = (due: DueRecheck, user: UserRow): Promise<UserRow | null> => {
   const auth = authClient();
-  // Turned off since the session started: nothing to ask, so the session lasts as a local one would.
-  if (!auth) return Promise.resolve(user);
+  // Turned off since the session started: nothing can re-check it.
+  if (!auth) return endSession(due.sessionId).then(() => null);
   let pending = rechecks.get(due.sessionId);
   if (!pending) {
     pending = recheck(auth, due, user).finally(() => rechecks.delete(due.sessionId));

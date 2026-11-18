@@ -132,7 +132,7 @@ verified email, are copied from the provider at each sign-in.
 - The sign-in page shows **Sign in with SSO**. Unless `AUTH_LOCAL_LOGIN` is on, password sign-in, first-run setup
   with a password, password reset and change, and doc's own invitations are refused and hidden, and the name
   and email in **Profile & security** come from the provider; people appear as members the first time they sign
-  in. Password sessions that already exist stay valid until they expire.
+  in. Password sessions that already exist end at their next request.
 - On an empty database, the first person to sign in sets up the workspace and gets the provider's role: give
   them `owner` in the provider.
 - The provider decides who may use the workspace. Its role (`owner`, `admin`, `member`; anything else counts as
@@ -150,7 +150,8 @@ verified email, are copied from the provider at each sign-in.
 
 **Turning it off.** Unset `AUTH_ISSUER` and restart. Password sign-in, invitations and member management work
 as before; accounts that had a password keep it, and accounts created by single sign-on can set one with
-**Forgot password?**. Sessions started through the provider last until they expire, like any other.
+**Forgot password?**. Sessions started through the provider end at their next request, since nothing can
+re-check them any more.
 
 ## Development
 
