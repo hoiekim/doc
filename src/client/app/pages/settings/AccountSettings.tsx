@@ -12,6 +12,8 @@ export const AccountSettings = () => {
   // to change either.
   const nameManaged = sso.enabled && user.ssoManaged === true;
   const emailManaged = nameManaged && user.ssoManagedEmail === true;
+  // Someone single sign-on created has no password to confirm an email change with.
+  const emailNeedsPassword = !(sso.enabled && user.hasPassword === false);
   const passwordsOff = sso.enabled && !sso.localLogin;
   const toast = useToast();
   const [name, setName] = useState(user.name);
@@ -35,7 +37,9 @@ export const AccountSettings = () => {
     setBusy("profile");
     try {
       const body: Parameters<typeof api.updateMe>[0] = { name: name.trim() };
-      if (email.trim() !== user.email) Object.assign(body, { email: email.trim(), currentPassword: emailPassword });
+      if (email.trim() !== user.email) {
+        Object.assign(body, { email: email.trim(), ...(emailNeedsPassword ? { currentPassword: emailPassword } : {}) });
+      }
       const { user: next } = await api.updateMe(body);
       setUser(next);
       setEmailPassword("");
@@ -112,7 +116,7 @@ export const AccountSettings = () => {
           <Field label="Email" hint={emailManaged ? "Your email comes from your identity provider." : undefined}>
             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={emailManaged} />
           </Field>
-          {email.trim() !== user.email && (
+          {email.trim() !== user.email && emailNeedsPassword && (
             <Field label="Current password" hint="Required to change your email">
               <Input type="password" value={emailPassword} onChange={(e) => setEmailPassword(e.target.value)} required autoComplete="current-password" />
             </Field>

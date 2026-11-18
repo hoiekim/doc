@@ -157,7 +157,8 @@ linked to someone else is refused. The name, and a verified email, are copied fr
   **Settings → Members**.
 - A linked person's name comes from the provider, and so does their email when the provider verified it at their
   last sign-in: **Profile & security** shows those read-only, and `/me/update` refuses to change them. An email
-  the provider hasn't verified stays the person's own to change in doc.
+  the provider hasn't verified stays the person's own to change in doc; someone single sign-on created has no
+  password here, so they change it without one.
 - Signing out also revokes doc's refresh token and signs the browser out of the provider.
 
 **Turning it off.** Unset `AUTH_ISSUER` and restart. Password sign-in, invitations and member management work

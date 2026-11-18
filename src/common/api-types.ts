@@ -41,6 +41,11 @@ export interface User {
    * their last sign-in and manages it too. Otherwise the email is doc's own.
    */
   ssoManagedEmail?: boolean;
+  /**
+   * Present for the current user while single sign-on is on: whether they have
+   * a password here. People single sign-on created have none.
+   */
+  hasPassword?: boolean;
 }
 
 export interface Member extends User {

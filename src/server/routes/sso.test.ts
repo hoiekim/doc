@@ -454,7 +454,8 @@ describe("re-checking access", () => {
     refreshesAs({ sub: "usr_carol", username: "carol", name: "Carol C", role: "admin" });
     const me = await carol.get("/me");
     expect(me.status).toBe(200);
-    expect(me.body.data.user).toMatchObject({ name: "Carol C", role: "admin" });
+    // A re-check carries no ID token, so the provider still manages the email it verified at sign-in.
+    expect(me.body.data.user).toMatchObject({ name: "Carol C", role: "admin", ssoManagedEmail: true });
     expect(refreshes()).toBe(1);
     const [row] = await sql`SELECT auth_recheck_at FROM sessions WHERE id = ${sessionId}`;
     expect(new Date(row.auth_recheck_at).getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
@@ -632,6 +633,9 @@ describe("a linked person's profile", () => {
     // dave.local@example.com, linked to the provider's dave through AUTH_LINK_USERS above.
     const { client } = await ssoSignIn({ sub: "usr_dave", username: "dave", name: "Dave", email: "dave@example.com", emailVerified: false });
     expect((await client.get("/me")).body.data.user).toMatchObject({ email: "dave.local@example.com", ssoManaged: true, ssoManagedEmail: false });
+    // An account with a password still confirms the change with it.
+    expect((await client.get("/me")).body.data.user.hasPassword).toBe(true);
+    expect((await client.post("/me/update", { email: "dave@example.com" })).status).toBe(400);
     const changed = await client.post("/me/update", { email: "dave@example.com", currentPassword: "member-password" });
     expect(changed.status).toBe(200);
     expect(changed.body.data.user.email).toBe("dave@example.com");
@@ -640,6 +644,18 @@ describe("a linked person's profile", () => {
     // Once the provider verifies one, it manages the email from the next sign-in on.
     const verified = await ssoSignIn({ sub: "usr_dave", username: "dave", name: "Dave", email: "dave@example.org" });
     expect((await verified.client.get("/me")).body.data.user).toMatchObject({ email: "dave@example.org", ssoManagedEmail: true });
+  });
+
+  test("keeps its own email when the provider's belongs to another account, and changes it without a password", async () => {
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    // The provider now sends an address another account here holds.
+    const { client } = await ssoSignIn({ sub: "usr_kim", username: "kim", name: "Kim", email: "alice@example.com" });
+    const me = (await client.get("/me")).body.data.user;
+    expect(me).toMatchObject({ email: "kim@example.com", ssoManaged: true, ssoManagedEmail: false, hasPassword: false });
+    // Single sign-on created this account, so there is no password to confirm the change with.
+    const changed = await client.post("/me/update", { email: "kim.new@example.com" });
+    expect(changed.status).toBe(200);
+    expect(changed.body.data.user).toMatchObject({ email: "kim.new@example.com", ssoManagedEmail: false });
   });
 });
 
