@@ -64,6 +64,8 @@ export const routes = [
       const found = await findOrCreateUser(login.claims, login.idClaims);
       if (typeof found === "string") return refuse(ctx, found);
       const user = await applyClaims(found, login.claims, login.idClaims);
+      // Activation is doc's own: the provider let this person in, but an admin here deactivated them.
+      if (user.deactivated_at) return refuse(ctx, "deactivated");
       await signIn(ctx, user.id, { sid: login.claims.sid, refreshToken: login.refreshToken ?? null });
     } catch (error) {
       return refuse(ctx, loginFailure(error));

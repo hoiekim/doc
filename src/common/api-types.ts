@@ -32,7 +32,8 @@ export interface User {
   lastLoginAt: string | null;
   /**
    * Present when single sign-on is on, for the current user and in the member
-   * list: the identity provider manages this person's name, role and access.
+   * list: this person is linked to the identity provider, which sets their
+   * name and role and is their only way to sign in.
    */
   ssoManaged?: boolean;
   /**

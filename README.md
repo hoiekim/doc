@@ -92,7 +92,7 @@ provider before someone signs in with it.
 | `AUTH_REDIRECT_URI` | Callback registered for the client. Default: `APP_URL` + `/api/auth/callback`. |
 | `AUTH_BACKCHANNEL_URL` | Private-network URL of the same issuer, used for every server-to-server call. |
 | `AUTH_AUDIENCE` | The service name in tokens' `aud`, when it differs from the client id. |
-| `AUTH_LOCAL_LOGIN` | `true` keeps password sign-in, password resets and invitations alongside single sign-on, for a migration period. Default `false`. |
+| `AUTH_LOCAL_LOGIN` | `true` keeps password sign-in, password resets and invitations alongside single sign-on, for a migration period; accounts linked to the provider still sign in only through it. Default `false`. |
 | `AUTH_LINK_USERS` | `<local email>=<provider username>` pairs, comma-separated, e.g. `alice@example.com=alice,bob@example.com=bob`: links existing accounts on their first sign-in. |
 
 The server checks these at start and refuses to start, listing every problem, when one is missing or malformed.
@@ -121,41 +121,48 @@ confidential client (the `mfa_roles` and `signup` policy are the deployment's ch
 the redirect URI followed by `/`.
 
 **Who is who.** At the callback doc uses, in order: the account already linked to the provider's subject; the
-account `AUTH_LINK_USERS` names for the provider username, if it is not linked yet; the one unlinked, active
-account with the email the provider verified (its owner could take it over with a password reset anyway);
-otherwise a new account, added to the default group. A new account needs an email; one whose email belongs to an
-unlinked account the provider didn't verify is refused, so link those with `AUTH_LINK_USERS`. The name, and a
-verified email, are copied from the provider at each sign-in.
+account `AUTH_LINK_USERS` names for the provider username, if it is not linked yet; the one unlinked account with
+the ID token's email, whether or not the provider marked it verified; otherwise a new account, added to the default
+group. Matching an unverified email relies on the provider setting an address a person chose only after they
+confirm it: one it hasn't verified was then entered by its administrator, at account creation or import, and is as
+trustworthy as `AUTH_LINK_USERS`. **Don't use single sign-on with a provider that lets people claim an address they
+haven't confirmed**: anyone could then claim an address there and take over the account here that has it. Linking
+leaves an account's activation as it is. A new account needs an email, and one whose email belongs to an account
+linked to someone else is refused. The name, and a verified email, are copied from the provider at each sign-in.
 
 **What changes.**
 
 - The sign-in page shows **Sign in with SSO**. Unless `AUTH_LOCAL_LOGIN` is on, password sign-in, first-run setup
-  with a password, password reset and change, and doc's own invitations are refused and hidden, and the name
-  and email in **Profile & security** come from the provider; people appear as members the first time they sign
-  in. Password sessions that already exist end at their next request.
+  with a password, password reset and change, and doc's own invitations are refused and hidden; people appear as
+  members the first time they sign in. Password sessions that already exist end at their next request.
+- An account linked to the provider signs in only through it, even with `AUTH_LOCAL_LOGIN` on, so a person the
+  provider disabled can't come back with a password: password sign-in fails for it as for an unknown address,
+  **Forgot password?** sends it nothing, and a reset link sent before it was linked no longer works.
 - On an empty database, the first person to sign in sets up the workspace and gets the provider's role: give
   them `owner` in the provider.
-- The provider decides who may use the workspace. Its role (`owner`, `admin`, `member`; anything else counts as
-  `member`) becomes the workspace role at each sign-in and re-check, and admins can't change the role or
-  activation of members who signed in with it; they can still remove them. Space roles and groups stay in doc.
-  The workspace's allowed email domains apply to doc's own invitations and email changes, not to these sign-ins.
+- The provider decides who may sign in through it. Its role (`owner`, `admin`, `member`; anything else counts as
+  `member`) becomes the workspace role at each sign-in and re-check, and admins can't change the role of members
+  linked to it. Activation stays doc's: admins deactivate, reactivate and remove linked members as any other, and a
+  deactivated member's sign-in through the provider is refused until an admin reactivates them. Space roles and
+  groups stay in doc. The workspace's allowed email domains apply to doc's own invitations and email changes, not
+  to these sign-ins.
 - A session started through the provider is re-checked with it every 10 minutes, with the refresh token the
   provider issued at sign-in (a session without one ends at its first re-check). When the provider is
   unreachable, the session is served for up to an hour past its re-check, then ends; after a re-check the provider
   couldn't answer, the session's requests don't ask it again for a minute. A session the provider ended, or a user
   it removed, disabled or deleted, is signed out at once, and their open sockets close within a minute on every copy
-  of the server; removal, disabling and deletion also deactivate the member until their next sign-in through the
-  provider. Doc never deletes a user's data on its own: a deleted user's pages and comments stay, and an admin can
-  remove the member in **Settings → Members**.
+  of the server. Doc doesn't deactivate them: the provider refuses their sign-in itself. Doc never deletes a user's
+  data on its own: a deleted user's pages and comments stay, and an admin can remove the member in
+  **Settings → Members**.
 - A linked person's name comes from the provider, and so does their email when the provider verified it at their
   last sign-in: **Profile & security** shows those read-only, and `/me/update` refuses to change them. An email
   the provider hasn't verified stays the person's own to change in doc.
 - Signing out also revokes doc's refresh token and signs the browser out of the provider.
 
 **Turning it off.** Unset `AUTH_ISSUER` and restart. Password sign-in, invitations and member management work
-as before; accounts that had a password keep it, and accounts created by single sign-on can set one with
-**Forgot password?**. Sessions started through the provider end at their next request, since nothing can
-re-check them any more.
+as before; accounts that had a password, linked or not, sign in with it again, and accounts created by single
+sign-on can set one with **Forgot password?**. Sessions started through the provider end at their next request,
+since nothing can re-check them any more.
 
 ## Development
 

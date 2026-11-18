@@ -54,7 +54,10 @@ export const routes = [
     const body = input(await readJson(ctx));
     const email = body.string("email", EMAIL_RULE).toLowerCase();
     const password = body.string("password", { max: 200, trim: false });
-    const [user] = await sql`SELECT * FROM users WHERE lower(email) = ${email}`;
+    // While single sign-on is on, an account linked to the provider signs in
+    // only through it, even with AUTH_LOCAL_LOGIN, so a person the provider
+    // disabled can't come back with a password: it is looked up as an unknown one.
+    const [user] = await sql`SELECT * FROM users WHERE lower(email) = ${email} AND (${!config.sso} OR auth_sub IS NULL)`;
     const valid = await verifyPassword(password, user?.password_hash ?? null);
     if (!user || !valid || user.deactivated_at) throw invalidCredentials();
     await signIn(ctx, user.id);
@@ -72,7 +75,10 @@ export const routes = [
     rateLimit("forgot-password", ctx.ip);
     const body = input(await readJson(ctx));
     const email = body.string("email", EMAIL_RULE).toLowerCase();
-    const [user] = await sql`SELECT id, email, name FROM users WHERE lower(email) = ${email} AND deactivated_at IS NULL`;
+    // Nothing for an account linked to the provider while single sign-on is on, as at /auth/login.
+    const [user] = await sql`
+      SELECT id, email, name FROM users
+      WHERE lower(email) = ${email} AND deactivated_at IS NULL AND (${!config.sso} OR auth_sub IS NULL)`;
     if (user) {
       const value = token();
       await sql`DELETE FROM user_tokens WHERE user_id = ${user.id} AND purpose = ${RESET_PURPOSE}`;
@@ -101,10 +107,11 @@ export const routes = [
     const body = input(await readJson(ctx));
     const value = body.string("token", { max: 200 });
     const passwordHash = await hashPassword(body.string("password", PASSWORD_RULE));
+    // While single sign-on is on, a link sent before the account was linked to the provider no longer works, as at /auth/login.
     const [row] = await sql`
       DELETE FROM user_tokens t USING users u
       WHERE t.token_hash = ${hashToken(value)} AND t.purpose = ${RESET_PURPOSE} AND t.expires_at > now()
-        AND u.id = t.user_id AND u.deactivated_at IS NULL
+        AND u.id = t.user_id AND u.deactivated_at IS NULL AND (${!config.sso} OR u.auth_sub IS NULL)
       RETURNING t.user_id`;
     if (!row) throw badRequest("This reset link is invalid or has expired");
     await sql`UPDATE users SET password_hash = ${passwordHash}, updated_at = now() WHERE id = ${row.user_id}`;

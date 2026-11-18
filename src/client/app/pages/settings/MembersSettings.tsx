@@ -48,8 +48,8 @@ export const MembersSettings = () => {
   };
 
   const canManage = (m: Member) => isAdmin && m.id !== user.id && !(m.role === "owner" && user.role !== "owner");
-  // The identity provider sets these members' role and whether they are active.
-  const canChange = (m: Member) => canManage(m) && !m.ssoManaged;
+  // The identity provider sets these members' role; whether they are active stays this workspace's.
+  const canChangeRole = (m: Member) => canManage(m) && !m.ssoManaged;
   const count = `${total} ${total === 1 ? "person" : "people"} in this workspace.`;
 
   return (
@@ -71,14 +71,14 @@ export const MembersSettings = () => {
                 </div>
                 <div className="muted small">{m.email}</div>
               </div>
-              {canChange(m) ? (
+              {canChangeRole(m) ? (
                 <select className="input input-compact" value={m.role} onChange={(e) => act(() => api.changeRole(m.id, e.target.value as WorkspaceRole), "Role updated")}>
                   {user.role === "owner" && <option value="owner">Owner</option>}
                   <option value="admin">Admin</option>
                   <option value="member">Member</option>
                 </select>
               ) : (
-                <span className="muted" title={m.ssoManaged ? "Managed by your identity provider" : undefined}>
+                <span className="muted" title={m.ssoManaged ? "Role managed by your identity provider" : undefined}>
                   {ROLE_LABEL[m.role]}
                   {m.ssoManaged && " · SSO"}
                 </span>
@@ -86,13 +86,9 @@ export const MembersSettings = () => {
               {canManage(m) && (
                 <MenuButton
                   items={[
-                    ...(m.ssoManaged
-                      ? []
-                      : [
-                          m.deactivatedAt
-                            ? { label: "Reactivate", onSelect: () => act(() => api.activateMember(m.id), "Member reactivated") }
-                            : { label: "Deactivate", onSelect: () => act(() => api.deactivateMember(m.id), "Member deactivated") },
-                        ]),
+                    m.deactivatedAt
+                      ? { label: "Reactivate", onSelect: () => act(() => api.activateMember(m.id), "Member reactivated") }
+                      : { label: "Deactivate", onSelect: () => act(() => api.deactivateMember(m.id), "Member deactivated") },
                     {
                       label: "Remove from workspace",
                       danger: true,

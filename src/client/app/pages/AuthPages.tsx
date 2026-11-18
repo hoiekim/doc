@@ -11,7 +11,8 @@ const SSO_ERRORS: Record<string, string> = {
   access_denied: "Single sign-on was cancelled or access was denied.",
   unavailable: "The identity provider could not be reached. Try again in a moment.",
   no_email: "Your single sign-on account has no email address. Ask an administrator to add one.",
-  account_exists: "An account with your email address already exists here. Ask an administrator to link it to your single sign-on account.",
+  account_exists: "An account with your email address already exists here, linked to another single sign-on account. Ask an administrator.",
+  deactivated: "Your account in this workspace is deactivated. Ask a workspace admin to reactivate it.",
   rate_limited: "Too many sign-in attempts. Try again in a minute.",
 };
 

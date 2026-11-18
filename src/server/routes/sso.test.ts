@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign as edSign, type KeyObject } from "node:crypto";
 import { sql } from "server/db";
+import { flushMail } from "server/lib/mail";
 import { resetRateLimits } from "server/lib/ratelimit";
 import { forgetAuthClient } from "server/lib/sso";
 import { hashPassword } from "server/lib/users";
@@ -318,9 +319,9 @@ describe("linking existing accounts", () => {
   let local: Record<string, string> = {};
 
   beforeAll(async () => {
-    // Local accounts made while passwords still worked.
+    // Local accounts made while passwords still worked; olga's is never linked.
     setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
-    for (const email of ["dave.local@example.com", "erin@example.com", "frank@example.com", "gina@example.com"]) {
+    for (const email of ["dave.local@example.com", "erin@example.com", "frank@example.com", "gina@example.com", "olga@example.com"]) {
       local[email] = (await t.addMember(alice, email)).user.id;
     }
     await alice.post("/members/deactivate", { userId: local["gina@example.com"] });
@@ -337,26 +338,96 @@ describe("linking existing accounts", () => {
     expect((await userBySub("usr_dave")).id).toBe(local["dave.local@example.com"]);
   });
 
-  test("a verified email links the one account with that address", async () => {
+  test("a verified email links the one account with that address, and the provider manages it from then on", async () => {
     const { client } = await ssoSignIn({ sub: "usr_erin", username: "erin", email: "Erin@Example.com" });
-    expect((await client.get("/me")).body.data.user.id).toBe(local["erin@example.com"]);
+    expect((await client.get("/me")).body.data.user).toMatchObject({ id: local["erin@example.com"], ssoManaged: true, ssoManagedEmail: true });
+    expect((await userBySub("usr_erin")).email_from_provider).toBe(true);
   });
 
-  test("an unverified email that an unlinked account has is refused", async () => {
-    const { location } = await ssoSignIn({ sub: "usr_frank", username: "frank", email: "frank@example.com", emailVerified: false });
-    expect(location).toBe("/login?sso_error=account_exists");
-    expect(await userBySub("usr_frank")).toBeUndefined();
+  test("an unverified email links the one account with that address too, and the account keeps its email", async () => {
+    const { client } = await ssoSignIn({ sub: "usr_frank", username: "frank", email: "Frank@Example.com", emailVerified: false });
+    expect((await client.get("/me")).body.data.user).toMatchObject({
+      id: local["frank@example.com"],
+      email: "frank@example.com",
+      ssoManaged: true,
+      ssoManagedEmail: false,
+    });
+    expect((await userBySub("usr_frank")).email_from_provider).toBe(false);
   });
 
-  test("a deactivated account isn't linked by email", async () => {
-    const { location } = await ssoSignIn({ sub: "usr_gina", username: "gina", email: "gina@example.com" });
-    expect(location).toBe("/login?sso_error=account_exists");
+  test("a deactivated account is linked by email and stays deactivated until an admin reactivates it", async () => {
+    const refused = await ssoSignIn({ sub: "usr_gina", username: "gina", email: "gina@example.com" });
+    expect(refused.location).toBe("/login?sso_error=deactivated");
+    expect(refused.client.cookie).toBeNull();
+    const gina = await userBySub("usr_gina");
+    expect(gina.id).toBe(local["gina@example.com"]);
+    expect(gina.deactivated_at).not.toBeNull();
+    expect(await sql`SELECT 1 FROM sessions WHERE user_id = ${gina.id}`).toHaveLength(0);
+    expect((await alice.post("/members/activate", { userId: gina.id })).status).toBe(200);
+    const again = await ssoSignIn({ sub: "usr_gina", username: "gina", email: "gina@example.com" });
+    expect(again.location).toBe("/");
+    expect((await again.client.get("/me")).body.data.user.id).toBe(gina.id);
   });
 
   test("an account already linked to someone else isn't taken over", async () => {
     const { location } = await ssoSignIn({ sub: "usr_mallory", username: "mallory", email: "erin@example.com" });
     expect(location).toBe("/login?sso_error=account_exists");
     expect((await userBySub("usr_erin")).id).toBe(local["erin@example.com"]);
+  });
+});
+
+describe("a linked account's password", () => {
+  let resetToken: string;
+
+  beforeAll(async () => {
+    // A reset link sent while the account was still only doc's, before its first sign-in through the provider.
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    await t.addMember(alice, "quinn@example.com");
+    await flushMail();
+    t.outbox.length = 0;
+    await t.client().post("/auth/forgot-password", { email: "quinn@example.com" });
+    await flushMail();
+    const mail = t.outbox.find((m) => m.to === "quinn@example.com");
+    resetToken = decodeURIComponent(/reset-password\?token=([^\s"<]+)/.exec(mail!.text)![1]!);
+    await ssoSignIn({ sub: "usr_quinn", username: "quinn" });
+  });
+
+  const login = (email: string) => t.client().post("/auth/login", { email, password: "member-password" });
+
+  test("signs in only through the provider while single sign-on is on, and with the password once it is off", async () => {
+    expect((await userBySub("usr_quinn")).email).toBe("quinn@example.com");
+    setEnv(SSO_ENV);
+    expect((await login("quinn@example.com")).body.error!.code).toBe("local_login_disabled");
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    const unknown = await login("nobody@example.com");
+    const linked = await login("quinn@example.com");
+    expect(linked.status).toBe(401);
+    expect(linked.body).toEqual(unknown.body);
+    expect(linked.headers.getSetCookie()).toEqual([]);
+    // An account that isn't linked still signs in with its password.
+    expect((await login("olga@example.com")).status).toBe(200);
+    setEnv({});
+    expect((await login("quinn@example.com")).status).toBe(200);
+  });
+
+  test("gets no reset email while single sign-on is on, and a link sent before it was linked doesn't work", async () => {
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    await flushMail();
+    t.outbox.length = 0;
+    const anon = t.client();
+    for (const email of ["quinn@example.com", "olga@example.com"]) {
+      const res = await anon.post("/auth/forgot-password", { email });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({});
+    }
+    await flushMail();
+    expect(t.outbox.map((m) => m.to)).toEqual(["olga@example.com"]);
+    const refused = await anon.post("/auth/reset-password", { token: resetToken, password: "quinn-new-password" });
+    expect(refused.status).toBe(400);
+    expect(anon.cookie).toBeNull();
+    // The same link still works once single sign-on is off.
+    setEnv({});
+    expect((await anon.post("/auth/reset-password", { token: resetToken, password: "quinn-new-password" })).status).toBe(200);
   });
 });
 
@@ -464,43 +535,51 @@ describe("events from the provider", () => {
     expect((await postEvent(eventToken({ "session.ended": { sid: "ses_hal_1" } }))).status).toBe(202);
   });
 
-  test("access.changed applies the new role, and a removal deactivates the user", async () => {
+  /** The user's sessions ended and the socket closed, while the account stays active: the provider refuses their sign-in itself. */
+  const expectSignedOut = async (sub: string, client: Client, socket: Awaited<ReturnType<typeof openSocket>>) => {
+    expect((await client.get("/me")).status).toBe(401);
+    expect(await settle(socket.closed)).toBe(4001);
+    const user = await userBySub(sub);
+    expect(user.deactivated_at).toBeNull();
+    expect(await sql`SELECT 1 FROM sessions WHERE user_id = ${user.id}`).toHaveLength(0);
+  };
+
+  test("access.changed applies the new role, and a removal ends the user's sessions without deactivating them", async () => {
     const { client } = await ssoSignIn({ sub: "usr_ivy", username: "ivy" });
     expect((await postEvent(eventToken({ "access.changed": { sub: "usr_ivy", role: "admin" } }))).status).toBe(202);
     expect((await client.get("/me")).body.data.user.role).toBe("admin");
     const socket = await openSocket(client);
-    expect((await postEvent(eventToken({ "access.changed": { sub: "usr_ivy", role: null } }))).status).toBe(202);
-    expect((await client.get("/me")).status).toBe(401);
-    expect(await settle(socket.closed)).toBe(4001);
-    const user = await userBySub("usr_ivy");
-    expect(user.deactivated_at).not.toBeNull();
-    expect(await sql`SELECT 1 FROM sessions WHERE user_id = ${user.id}`).toHaveLength(0);
-    // A grant only sets the role: events can arrive out of order, so it can't
-    // lift a deactivation. The next sign-in, which the provider gates, does.
+    try {
+      expect((await postEvent(eventToken({ "access.changed": { sub: "usr_ivy", role: null } }))).status).toBe(202);
+      await expectSignedOut("usr_ivy", client, socket);
+    } finally {
+      socket.ws.close();
+    }
     expect((await postEvent(eventToken({ "access.changed": { sub: "usr_ivy", role: "member" } }))).status).toBe(202);
     expect((await userBySub("usr_ivy")).role).toBe("member");
-    expect((await userBySub("usr_ivy")).deactivated_at).not.toBeNull();
-    await ssoSignIn({ sub: "usr_ivy", username: "ivy" });
-    expect((await userBySub("usr_ivy")).deactivated_at).toBeNull();
   });
 
-  test("user.disabled deactivates the user until they sign in again", async () => {
-    const { client } = await ssoSignIn({ sub: "usr_jack", username: "jack" });
-    expect((await postEvent(eventToken({ "user.disabled": { sub: "usr_jack" } }))).status).toBe(202);
-    expect((await client.get("/me")).status).toBe(401);
-    expect((await userBySub("usr_jack")).deactivated_at).not.toBeNull();
-    const again = await ssoSignIn({ sub: "usr_jack", username: "jack" });
-    expect((await again.client.get("/me")).status).toBe(200);
-    expect((await userBySub("usr_jack")).deactivated_at).toBeNull();
+  test("user.disabled ends every session of the user and closes their sockets, without deactivating them", async () => {
+    const one = await ssoSignIn({ sub: "usr_jack", username: "jack", sid: "ses_jack_1" });
+    await ssoSignIn({ sub: "usr_jack", username: "jack", sid: "ses_jack_2" });
+    const socket = await openSocket(one.client);
+    try {
+      expect((await postEvent(eventToken({ "user.disabled": { sub: "usr_jack" } }))).status).toBe(202);
+      await expectSignedOut("usr_jack", one.client, socket);
+    } finally {
+      socket.ws.close();
+    }
   });
 
-  test("user.deleted deactivates the user and keeps what they wrote", async () => {
+  test("user.deleted ends the user's sessions too, and keeps the account", async () => {
     const { client } = await ssoSignIn({ sub: "usr_kim", username: "kim" });
-    const { id } = await userBySub("usr_kim");
-    expect((await postEvent(eventToken({ "user.deleted": { sub: "usr_kim" } }))).status).toBe(202);
-    expect((await client.get("/me")).status).toBe(401);
-    const [row] = await sql`SELECT deactivated_at FROM users WHERE id = ${id}`;
-    expect(row.deactivated_at).not.toBeNull();
+    const socket = await openSocket(client);
+    try {
+      expect((await postEvent(eventToken({ "user.deleted": { sub: "usr_kim" } }))).status).toBe(202);
+      await expectSignedOut("usr_kim", client, socket);
+    } finally {
+      socket.ws.close();
+    }
   });
 
   test("other events are acknowledged and ignored, whatever the content type and origin", async () => {
@@ -512,7 +591,7 @@ describe("events from the provider", () => {
   test("an event that doesn't verify is refused", async () => {
     expect((await postEvent(eventToken({ "user.disabled": { sub: "usr_alice" } }, stranger.privateKey))).status).toBe(400);
     expect((await postEvent("not a token")).status).toBe(400);
-    expect((await userBySub("usr_alice")).deactivated_at).toBeNull();
+    expect((await alice.get("/me")).status).toBe(200);
   });
 
   test("an event that can't be checked while the provider is unreachable is answered 503, so it is sent again", async () => {
@@ -520,7 +599,7 @@ describe("events from the provider", () => {
     fake.keysDown = true;
     try {
       expect((await postEvent(eventToken({ "user.disabled": { sub: "usr_alice" } }))).status).toBe(503);
-      expect((await userBySub("usr_alice")).deactivated_at).toBeNull();
+      expect((await alice.get("/me")).status).toBe(200);
     } finally {
       fake.keysDown = false;
       forgetAuthClient();
@@ -579,39 +658,58 @@ describe("signing out", () => {
   test("of a password session answers as before", async () => {
     setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
     const local = t.client();
-    expect((await local.post("/auth/login", { email: "erin@example.com", password: "member-password" })).status).toBe(200);
+    expect((await local.post("/auth/login", { email: "olga@example.com", password: "member-password" })).status).toBe(200);
     expect((await local.post("/auth/logout")).body.data).toEqual({});
   });
 });
 
 describe("members managed by the provider", () => {
   let bobId: string;
-  let frankId: string;
+  let olgaId: string;
 
   beforeAll(async () => {
     setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
     alice = (await ssoSignIn({ sub: "usr_alice", username: "alice", name: "Alice", role: "owner" })).client;
     bobId = (await userBySub("usr_bob")).id;
-    [{ id: frankId }] = await sql`SELECT id FROM users WHERE email = 'frank@example.com'`;
+    [{ id: olgaId }] = await sql`SELECT id FROM users WHERE email = 'olga@example.com'`;
   });
+
+  const bob = { sub: "usr_bob", username: "bob", name: "Robert", role: "admin", email: "robert@example.com" };
 
   test("are marked in the member list", async () => {
     const items = (await alice.get("/members?limit=200")).body.data.items as { id: string; ssoManaged?: boolean }[];
     expect(items.find((m) => m.id === bobId)?.ssoManaged).toBe(true);
-    expect(items.find((m) => m.id === frankId)?.ssoManaged).toBe(false);
+    expect(items.find((m) => m.id === olgaId)?.ssoManaged).toBe(false);
   });
 
-  test("can't have their role or activation changed here, but can be removed", async () => {
-    for (const res of [
-      await alice.post("/members/role", { userId: bobId, role: "member" }),
-      await alice.post("/members/deactivate", { userId: bobId }),
-      await alice.post("/members/activate", { userId: bobId }),
-    ]) {
-      expect(res.status).toBe(403);
-      expect(res.body.error!.code).toBe("sso_managed");
+  test("can't be given another role here", async () => {
+    const res = await alice.post("/members/role", { userId: bobId, role: "member" });
+    expect(res.status).toBe(403);
+    expect(res.body.error!.code).toBe("sso_managed");
+    expect((await userBySub("usr_bob")).role).toBe("admin");
+    expect((await alice.post("/members/role", { userId: olgaId, role: "admin" })).status).toBe(200);
+  });
+
+  test("can be deactivated, which signs them out and refuses their sign-in, and reactivated", async () => {
+    const { client } = await ssoSignIn(bob);
+    const socket = await openSocket(client);
+    try {
+      expect((await alice.post("/members/deactivate", { userId: bobId })).status).toBe(200);
+      expect((await client.get("/me")).status).toBe(401);
+      expect(await settle(socket.closed)).toBe(4001);
+    } finally {
+      socket.ws.close();
     }
-    expect((await alice.post("/members/role", { userId: frankId, role: "admin" })).status).toBe(200);
-    expect((await alice.post("/members/deactivate", { userId: frankId })).status).toBe(200);
+    const refused = await ssoSignIn(bob);
+    expect(refused.location).toBe("/login?sso_error=deactivated");
+    expect(refused.client.cookie).toBeNull();
+    expect((await alice.post("/members/activate", { userId: bobId })).status).toBe(200);
+    const again = await ssoSignIn(bob);
+    expect(again.location).toBe("/");
+    expect((await again.client.get("/me")).status).toBe(200);
+  });
+
+  test("can be removed", async () => {
     expect((await alice.post("/members/delete", { userId: bobId })).status).toBe(200);
   });
 });
@@ -642,10 +740,10 @@ describe("open sockets", () => {
   test("of a password session close too once it is revoked elsewhere", async () => {
     setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
     const local = t.client();
-    await local.post("/auth/login", { email: "erin@example.com", password: "member-password" });
+    await local.post("/auth/login", { email: "olga@example.com", password: "member-password" });
     const socket = await openSocket(local);
     try {
-      await sql`DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'erin@example.com')`;
+      await sql`DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'olga@example.com')`;
       await checkSocketSessions();
       expect(await settle(socket.closed)).toBe(4001);
     } finally {
@@ -669,8 +767,9 @@ describe("turning single sign-on off again", () => {
     expect((await owner.post("/auth/login", { email: "alice@example.com", password: "owner-password-2" })).status).toBe(200);
     const items = (await owner.get("/members?limit=200")).body.data.items as Record<string, unknown>[];
     expect(items.every((m) => !("ssoManaged" in m))).toBe(true);
+    // The role of a member linked to the provider is the workspace's again.
     const [ivy] = await sql`SELECT id FROM users WHERE auth_sub = 'usr_ivy'`;
-    expect((await owner.post("/members/deactivate", { userId: ivy.id })).status).toBe(200);
+    expect((await owner.post("/members/role", { userId: ivy.id, role: "admin" })).status).toBe(200);
     expect((await owner.post("/auth/logout")).body.data).toEqual({});
   });
 });
@@ -679,7 +778,7 @@ describe("password sessions", () => {
   test("end once single sign-on is the only way in", async () => {
     setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
     const local = t.client();
-    expect((await local.post("/auth/login", { email: "erin@example.com", password: "member-password" })).status).toBe(200);
+    expect((await local.post("/auth/login", { email: "olga@example.com", password: "member-password" })).status).toBe(200);
     expect((await local.get("/me")).status).toBe(200);
     setEnv(SSO_ENV);
     expect((await local.get("/me")).status).toBe(401);

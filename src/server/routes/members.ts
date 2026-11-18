@@ -41,7 +41,7 @@ export const routes = [
           (await sql`SELECT count(*) AS n FROM users u WHERE ${q} = '' OR lower(u.name) LIKE ${like} OR lower(u.email) LIKE ${like}`)[0]
             .n,
         );
-    // With single sign-on on, members it manages are marked, so admins see why they can't change them here.
+    // With single sign-on on, members linked to it are marked, so admins see why they can't change their role here.
     const items = rows.map((row: UserRow) => ({ ...toMember(row, ctx.user.id), ...ssoManagedField(row) }));
     return { items, total };
   }),
@@ -69,7 +69,6 @@ export const routes = [
 
   post("/members/deactivate", async (ctx) => {
     const target = await targetUser(ctx.user, input(await readJson(ctx)).uuid("userId"));
-    requireLocallyManaged(target);
     await sql`UPDATE users SET deactivated_at = COALESCE(deactivated_at, now()), updated_at = now() WHERE id = ${target.id}`;
     await revokeUserSessions(target.id);
     disconnectUser(target.id);
@@ -78,7 +77,6 @@ export const routes = [
 
   post("/members/activate", async (ctx) => {
     const target = await targetUser(ctx.user, input(await readJson(ctx)).uuid("userId"));
-    requireLocallyManaged(target);
     await sql`UPDATE users SET deactivated_at = NULL, updated_at = now() WHERE id = ${target.id}`;
     return {};
   }),

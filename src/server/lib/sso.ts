@@ -32,7 +32,7 @@ export const RECHECK_MS = 10 * 60 * 1000;
 const STALE_MS = 60 * 60 * 1000;
 
 /** Reasons the sign-in page shows after a refused sign-in (`/login?sso_error=…`). */
-export type SsoError = "login_failed" | "access_denied" | "unavailable" | "no_email" | "account_exists" | "rate_limited";
+export type SsoError = "login_failed" | "access_denied" | "unavailable" | "no_email" | "account_exists" | "deactivated" | "rate_limited";
 
 const asEmail = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -145,10 +145,10 @@ export const requireLocalLogin = (message: string) => {
   if (!config.localLogin) throw new HttpError(403, "local_login_disabled", message);
 };
 
-/** Refuses local changes to a member whose role and access come from the identity provider. */
+/** Refuses a local change to the role of a member linked to the identity provider, which sets it. */
 export const requireLocallyManaged = (user: Pick<UserRow, "auth_sub">) => {
   if (config.sso && user.auth_sub) {
-    throw new HttpError(403, "sso_managed", "This member's role and access are managed by the identity provider");
+    throw new HttpError(403, "sso_managed", "This member's role is managed by the identity provider");
   }
 };
 
@@ -169,12 +169,16 @@ const findBySub = async (sub: string): Promise<UserRow | null> => {
   return (row as UserRow | undefined) ?? null;
 };
 
-/** Links the account with this email to `sub`, unless it is already linked. */
-const linkByEmail = async (email: string, sub: string, { activeOnly }: { activeOnly: boolean }): Promise<UserRow | null> => {
+/**
+ * Links the account with this email to `sub`, unless it is already linked.
+ * A deactivated account is linked too, and stays deactivated: activation is
+ * doc's own, and the callback refuses to sign it in.
+ */
+const linkByEmail = async (email: string, sub: string): Promise<UserRow | null> => {
   try {
     const [row] = await sql`
       UPDATE users SET auth_sub = ${sub}, updated_at = now()
-      WHERE lower(email) = ${email} AND auth_sub IS NULL AND (${!activeOnly} OR deactivated_at IS NULL)
+      WHERE lower(email) = ${email} AND auth_sub IS NULL
       RETURNING *`;
     return (row as UserRow | undefined) ?? null;
   } catch (error) {
@@ -193,8 +197,8 @@ const createUser = async (claims: AccessClaims, email: string): Promise<UserRow 
       const [created] = await tx`SELECT * FROM users WHERE auth_sub = ${claims.sub}`;
       if (created) return created as UserRow;
       const [taken] = await tx`SELECT 1 FROM users WHERE lower(email) = ${email}`;
-      // An unlinked account with this address that the token can't prove is
-      // the same person's: an admin links them with AUTH_LINK_USERS.
+      // The account with this address is linked to someone else at the
+      // provider, or appeared after the lookup in findOrCreateUser.
       if (taken) return "account_exists" as const;
       // The provider decides who joins, so the workspace's allowed email
       // domains, which govern doc's own invitations, don't apply here.
@@ -218,31 +222,32 @@ const createUser = async (claims: AccessClaims, email: string): Promise<UserRow 
 
 /**
  * Finds the local user for a provider sign-in: the one linked to its subject,
- * or the account AUTH_LINK_USERS maps its username to, or the one account
- * with its verified email; otherwise a new user.
+ * or the account AUTH_LINK_USERS maps its username to, or the one unlinked
+ * account with its email; otherwise a new user. Linking leaves an account's
+ * activation as it is.
  */
 export const findOrCreateUser = async (claims: AccessClaims, idClaims: IdClaims): Promise<UserRow | SsoError> => {
   const linked = await findBySub(claims.sub);
   if (linked) return linked;
   const mapped = parseLinkUsers(config.sso?.linkUsers).links.get(claims.username);
-  const byMapping = mapped ? await linkByEmail(mapped, claims.sub, { activeOnly: false }) : null;
+  const byMapping = mapped ? await linkByEmail(mapped, claims.sub) : null;
   if (byMapping) return byMapping;
-  // Whoever controls the mailbox can already take an active local account
-  // with that address over through the password reset email, so linking it
-  // by an address the provider verified grants nothing new. A deactivated
-  // account can't be reset, so it isn't linked this way.
-  const verified = verifiedEmail(idClaims);
-  const byEmail = verified ? await linkByEmail(verified, claims.sub, { activeOnly: true }) : null;
-  if (byEmail) return byEmail;
   const email = asEmail(idClaims.email);
   if (!email) return "no_email";
+  // Verified or not: the provider sets an address a person chose only after
+  // they confirm it, so one it hasn't verified was entered by its
+  // administrator (at account creation or import), and matching on it is as
+  // trustworthy as AUTH_LINK_USERS. A provider that lets people claim
+  // addresses they haven't confirmed must not be used this way (README).
+  const byEmail = await linkByEmail(email, claims.sub);
+  if (byEmail) return byEmail;
   return createUser(claims, email);
 };
 
 /**
  * Copies the provider's view of the user onto the local row: the role, the
- * name and, at sign-in, a verified email. The provider decides who may use
- * the workspace, so this also lifts a deactivation.
+ * name and, at sign-in, a verified email. Activation is doc's own, so a
+ * deactivated account stays deactivated.
  */
 export const applyClaims = async (user: UserRow, claims: AccessClaims, idClaims?: IdClaims): Promise<UserRow> => {
   const role = workspaceRole(claims.role);
@@ -253,12 +258,12 @@ export const applyClaims = async (user: UserRow, claims: AccessClaims, idClaims?
   const verified = idClaims ? verifiedEmail(idClaims) : null;
   const fromProvider = idClaims ? verified !== null : user.email_from_provider;
   const email = verified && verified !== user.email.toLowerCase() ? verified : null;
-  if (role === user.role && name === user.name && !email && !user.deactivated_at && fromProvider === user.email_from_provider) {
+  if (role === user.role && name === user.name && !email && fromProvider === user.email_from_provider) {
     return user;
   }
   const update = (nextEmail: string | null, nextFromProvider: boolean) => sql`
     UPDATE users SET role = ${role}, name = ${name}, email = COALESCE(${nextEmail}, email),
-      email_from_provider = ${nextFromProvider}, deactivated_at = NULL, updated_at = now()
+      email_from_provider = ${nextFromProvider}, updated_at = now()
     WHERE id = ${user.id} RETURNING *`;
   try {
     const [row] = await update(email, fromProvider);
@@ -377,10 +382,9 @@ export const recheckSession = (due: DueRecheck, user: UserRow): Promise<UserRow 
   return pending;
 };
 
-const deactivate = async (sub: string) => {
-  const [user] = await sql`
-    UPDATE users SET deactivated_at = COALESCE(deactivated_at, now()), updated_at = now()
-    WHERE auth_sub = ${sub} RETURNING id`;
+/** Ends every session of the user linked to `sub` and closes their sockets on this copy. */
+const endUserSessions = async (sub: string) => {
+  const [user] = await sql`SELECT id FROM users WHERE auth_sub = ${sub}`;
   if (!user) return;
   await sql`DELETE FROM sessions WHERE user_id = ${user.id}`;
   disconnectUser(user.id);
@@ -390,6 +394,9 @@ const deactivate = async (sub: string) => {
  * Applies an event the provider pushed. Delivery is at least once, and each
  * case is idempotent, so no record of seen event ids is kept. Sockets on
  * another copy of the server notice within a minute (`checkSocketSessions`).
+ * A removal, disabling or deletion ends the user's sessions but doesn't
+ * deactivate them: the provider refuses their sign-in itself, and activation
+ * is doc's own.
  */
 export const applyEvent = async (event: AuthEvent) => {
   switch (event.type) {
@@ -401,15 +408,12 @@ export const applyEvent = async (event: AuthEvent) => {
     }
     case "access.changed":
       if (!event.sub) return;
-      if (typeof event.role !== "string") return deactivate(event.sub);
-      // Only the role: events can arrive out of order, so a grant must not lift
-      // a deactivation a later disable or removal made. The next sign-in,
-      // which the provider gates, lifts it (`applyClaims`).
+      if (typeof event.role !== "string") return endUserSessions(event.sub);
       await sql`UPDATE users SET role = ${workspaceRole(event.role)}, updated_at = now() WHERE auth_sub = ${event.sub}`;
       return;
     case "user.disabled":
     case "user.deleted":
-      if (event.sub) await deactivate(event.sub);
+      if (event.sub) await endUserSessions(event.sub);
       return;
   }
 };
