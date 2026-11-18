@@ -7,9 +7,11 @@ import { SettingsSection } from "./SettingsPage";
 
 export const AccountSettings = () => {
   const { user, setUser, sso } = useApp();
-  // The identity provider keeps a linked person's name and email, and with
-  // single sign-on as the only way in there is no password to change either.
-  const profileManaged = sso.enabled && user.ssoManaged === true;
+  // The identity provider keeps a linked person's name, and their email when it
+  // verified one; with single sign-on as the only way in there is no password
+  // to change either.
+  const nameManaged = sso.enabled && user.ssoManaged === true;
+  const emailManaged = nameManaged && user.ssoManagedEmail === true;
   const passwordsOff = sso.enabled && !sso.localLogin;
   const toast = useToast();
   const [name, setName] = useState(user.name);
@@ -104,18 +106,18 @@ export const AccountSettings = () => {
           </div>
         </div>
         <form className="form" onSubmit={saveProfile}>
-          <Field label="Name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={50} disabled={profileManaged} />
+          <Field label="Name" hint={nameManaged ? "Your name comes from your identity provider." : undefined}>
+            <Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={50} disabled={nameManaged} />
           </Field>
-          <Field label="Email" hint={profileManaged ? "Your name and email come from your identity provider." : undefined}>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={profileManaged} />
+          <Field label="Email" hint={emailManaged ? "Your email comes from your identity provider." : undefined}>
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={emailManaged} />
           </Field>
           {email.trim() !== user.email && (
             <Field label="Current password" hint="Required to change your email">
               <Input type="password" value={emailPassword} onChange={(e) => setEmailPassword(e.target.value)} required autoComplete="current-password" />
             </Field>
           )}
-          {!profileManaged && (
+          {!(nameManaged && emailManaged) && (
             <div>
               <Button variant="primary" type="submit" loading={busy === "profile"}>
                 Save profile

@@ -32,9 +32,14 @@ export interface User {
   lastLoginAt: string | null;
   /**
    * Present when single sign-on is on, for the current user and in the member
-   * list: the identity provider manages this person's name, email, role and access.
+   * list: the identity provider manages this person's name, role and access.
    */
   ssoManaged?: boolean;
+  /**
+   * Present with `ssoManaged`: the provider verified this person's email at
+   * their last sign-in and manages it too. Otherwise the email is doc's own.
+   */
+  ssoManagedEmail?: boolean;
 }
 
 export interface Member extends User {

@@ -529,11 +529,11 @@ describe("events from the provider", () => {
 });
 
 describe("a linked person's profile", () => {
-  test("is marked, and its name and email can't be changed here", async () => {
+  test("is marked, and its name and verified email can't be changed here", async () => {
     setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
     const { client } = await ssoSignIn({ sub: "usr_kim", username: "kim", name: "Kim" });
     const me = (await client.get("/me")).body.data.user;
-    expect(me.ssoManaged).toBe(true);
+    expect(me).toMatchObject({ ssoManaged: true, ssoManagedEmail: true });
     for (const change of [{ name: "Someone else" }, { email: "kim.other@example.com", currentPassword: "x" }]) {
       const res = await client.post("/me/update", change);
       expect(res.status).toBe(403);
@@ -542,7 +542,25 @@ describe("a linked person's profile", () => {
     // Saving the same values, and everything else, still works.
     const saved = await client.post("/me/update", { name: me.name, email: me.email, timezone: "Europe/Berlin" });
     expect(saved.status).toBe(200);
-    expect(saved.body.data.user).toMatchObject({ name: "Kim", timezone: "Europe/Berlin", ssoManaged: true });
+    expect(saved.body.data.user).toMatchObject({ name: "Kim", timezone: "Europe/Berlin", ssoManaged: true, ssoManagedEmail: true });
+    // The avatar answers carry the marks too, so the page doesn't unlock the fields after one.
+    const removed = await client.post("/me/avatar/remove");
+    expect(removed.body.data.user).toMatchObject({ ssoManaged: true, ssoManagedEmail: true });
+  });
+
+  test("keeps an email the provider didn't verify as the person's own, to change here", async () => {
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    // dave.local@example.com, linked to the provider's dave through AUTH_LINK_USERS above.
+    const { client } = await ssoSignIn({ sub: "usr_dave", username: "dave", name: "Dave", email: "dave@example.com", emailVerified: false });
+    expect((await client.get("/me")).body.data.user).toMatchObject({ email: "dave.local@example.com", ssoManaged: true, ssoManagedEmail: false });
+    const changed = await client.post("/me/update", { email: "dave@example.com", currentPassword: "member-password" });
+    expect(changed.status).toBe(200);
+    expect(changed.body.data.user.email).toBe("dave@example.com");
+    // Its name still comes from the provider.
+    expect((await client.post("/me/update", { name: "David" })).status).toBe(403);
+    // Once the provider verifies one, it manages the email from the next sign-in on.
+    const verified = await ssoSignIn({ sub: "usr_dave", username: "dave", name: "Dave", email: "dave@example.org" });
+    expect((await verified.client.get("/me")).body.data.user).toMatchObject({ email: "dave@example.org", ssoManagedEmail: true });
   });
 });
 

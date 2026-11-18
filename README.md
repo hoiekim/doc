@@ -147,8 +147,9 @@ verified email, are copied from the provider at each sign-in.
   of the server; removal, disabling and deletion also deactivate the member until their next sign-in through the
   provider. Doc never deletes a user's data on its own: a deleted user's pages and comments stay, and an admin can
   remove the member in **Settings → Members**.
-- A linked person's name and email come from the provider: **Profile & security** shows them read-only, and
-  `/me/update` refuses to change them.
+- A linked person's name comes from the provider, and so does their email when the provider verified it at their
+  last sign-in: **Profile & security** shows those read-only, and `/me/update` refuses to change them. An email
+  the provider hasn't verified stays the person's own to change in doc.
 - Signing out also revokes doc's refresh token and signs the browser out of the provider.
 
 **Turning it off.** Unset `AUTH_ISSUER` and restart. Password sign-in, invitations and member management work

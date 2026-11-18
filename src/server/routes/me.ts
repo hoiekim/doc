@@ -64,16 +64,16 @@ export const routes = [
     if (timezone && !validTimezone(timezone)) throw badRequest("Invalid timezone");
     const preferences: Partial<UserPreferences> | null = preferencesInput ? parsePreferences(preferencesInput) : null;
 
-    // A linked person's name and email come from the identity provider, which
-    // copies them back at each sign-in and re-check: a change here would
-    // silently revert.
-    if (
-      config.sso &&
-      ctx.user.auth_sub &&
-      ((name !== undefined && name !== ctx.user.name) ||
-        (emailInput !== undefined && normalizeEmail(emailInput) !== ctx.user.email.toLowerCase()))
-    ) {
-      throw new HttpError(403, "sso_managed", "Your name and email come from your identity provider");
+    // A linked person's name comes from the identity provider, and so does
+    // their email when the provider verified it at sign-in: both are copied
+    // back then, so a change here would silently revert.
+    if (config.sso && ctx.user.auth_sub) {
+      if (name !== undefined && name !== ctx.user.name) {
+        throw new HttpError(403, "sso_managed", "Your name comes from your identity provider");
+      }
+      if (ctx.user.email_from_provider && emailInput !== undefined && normalizeEmail(emailInput) !== ctx.user.email.toLowerCase()) {
+        throw new HttpError(403, "sso_managed", "Your email comes from your identity provider");
+      }
     }
 
     let email: string | undefined;
@@ -115,13 +115,13 @@ export const routes = [
       WHERE u.id = ${ctx.user.id} AND old.id = u.id RETURNING old.avatar`;
     await removeImage(previous?.avatar);
     const user = await findUserById(ctx.user.id);
-    return { user: toUser(user!, ctx.user.id) };
+    return { user: { ...toUser(user!, ctx.user.id), ...ssoManagedField(user!) } };
   }),
 
   post("/me/avatar/remove", async (ctx) => {
     await sql`UPDATE users SET avatar = NULL, updated_at = now() WHERE id = ${ctx.user.id}`;
     await removeImage(ctx.user.avatar);
     const user = await findUserById(ctx.user.id);
-    return { user: toUser(user!, ctx.user.id) };
+    return { user: { ...toUser(user!, ctx.user.id), ...ssoManagedField(user!) } };
   }),
 ];

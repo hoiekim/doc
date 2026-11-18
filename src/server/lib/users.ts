@@ -16,6 +16,8 @@ export interface UserRow {
   deactivated_at: Date | null;
   /** The identity provider's subject, once the user has signed in with single sign-on. */
   auth_sub: string | null;
+  /** The email is the one the identity provider verified at the last sign-in, so the provider manages it. */
+  email_from_provider: boolean;
 }
 
 export const iso = (value: Date | string | null | undefined): string | null =>
@@ -36,9 +38,11 @@ export const toUser = (row: UserRow, viewerId?: string): User => ({
   lastLoginAt: iso(row.last_login_at),
 });
 
-/** `ssoManaged`, while single sign-on is on; nothing otherwise, so answers without it are unchanged. */
-export const ssoManagedField = (row: Pick<UserRow, "auth_sub">): Pick<User, "ssoManaged"> =>
-  config.sso ? { ssoManaged: row.auth_sub !== null } : {};
+/** `ssoManaged` and `ssoManagedEmail`, while single sign-on is on; nothing otherwise, so answers without it are unchanged. */
+export const ssoManagedField = (
+  row: Pick<UserRow, "auth_sub" | "email_from_provider">,
+): Pick<User, "ssoManaged" | "ssoManagedEmail"> =>
+  config.sso ? { ssoManaged: row.auth_sub !== null, ssoManagedEmail: row.auth_sub !== null && row.email_from_provider } : {};
 
 export const toMember = (row: UserRow, viewerId: string): Member => ({
   ...toUser(row, viewerId),

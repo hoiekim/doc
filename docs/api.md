@@ -62,8 +62,8 @@ the provider's role.
 
 | method | path | body | returns |
 |---|---|---|---|
-| GET | `/me` | | `{ user, workspace }`. With single sign-on on, `user.ssoManaged` says whether the identity provider manages this person. |
-| POST | `/me/update` | `{ name?, email?, currentPassword?, locale?, timezone?, preferences? }` | `{ user }`. Changing email requires `currentPassword`. With single sign-on on, changing a linked person's name or email fails with 403 `sso_managed`. `preferences` merges keys: `fullPageWidth`, `pageEditMode` (`read`/`edit`), `editorToolbar`, `theme`, and notification switches `notifyPageUpdates`, `notifyPageMentions`, `notifyCommentMentions`, `notifyComments`. |
+| GET | `/me` | | `{ user, workspace }`. With single sign-on on, `user.ssoManaged` says whether the identity provider manages this person's name, role and access, and `user.ssoManagedEmail` whether it manages their email too (it verified it at their last sign-in). `/me/update` and the avatar routes answer `user` the same way. |
+| POST | `/me/update` | `{ name?, email?, currentPassword?, locale?, timezone?, preferences? }` | `{ user }`. Changing email requires `currentPassword`. With single sign-on on, changing a linked person's name, or an email the provider manages (`ssoManagedEmail`), fails with 403 `sso_managed`. `preferences` merges keys: `fullPageWidth`, `pageEditMode` (`read`/`edit`), `editorToolbar`, `theme`, and notification switches `notifyPageUpdates`, `notifyPageMentions`, `notifyCommentMentions`, `notifyComments`. |
 | POST | `/me/avatar` | multipart `file` (png/jpeg/webp/gif ≤ 10 MB) | `{ user }` |
 | POST | `/me/avatar/remove` | | `{ user }` |
 

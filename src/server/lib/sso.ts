@@ -247,19 +247,26 @@ export const findOrCreateUser = async (claims: AccessClaims, idClaims: IdClaims)
 export const applyClaims = async (user: UserRow, claims: AccessClaims, idClaims?: IdClaims): Promise<UserRow> => {
   const role = workspaceRole(claims.role);
   const name = displayName(claims) || user.name;
+  // At sign-in, an email the provider verified becomes the account's, and the
+  // provider manages it from then on; without one, the account manages its
+  // own. A re-check carries no ID token, so it leaves both alone.
   const verified = idClaims ? verifiedEmail(idClaims) : null;
+  const fromProvider = idClaims ? verified !== null : user.email_from_provider;
   const email = verified && verified !== user.email.toLowerCase() ? verified : null;
-  if (role === user.role && name === user.name && !email && !user.deactivated_at) return user;
-  const update = (nextEmail: string | null) => sql`
-    UPDATE users SET role = ${role}, name = ${name}, email = COALESCE(${nextEmail}, email), deactivated_at = NULL, updated_at = now()
+  if (role === user.role && name === user.name && !email && !user.deactivated_at && fromProvider === user.email_from_provider) {
+    return user;
+  }
+  const update = (nextEmail: string | null, nextFromProvider: boolean) => sql`
+    UPDATE users SET role = ${role}, name = ${name}, email = COALESCE(${nextEmail}, email),
+      email_from_provider = ${nextFromProvider}, deactivated_at = NULL, updated_at = now()
     WHERE id = ${user.id} RETURNING *`;
   try {
-    const [row] = await update(email);
+    const [row] = await update(email, fromProvider);
     return (row as UserRow | undefined) ?? user;
   } catch (error) {
-    // Another account here has that address: this one keeps its own.
+    // Another account here has that address: this one keeps, and manages, its own.
     if (!email || !isUniqueViolation(error)) throw error;
-    const [row] = await update(null);
+    const [row] = await update(null, false);
     return (row as UserRow | undefined) ?? user;
   }
 };
