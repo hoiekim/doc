@@ -13,6 +13,8 @@ export interface UserRow {
   created_at: Date;
   last_login_at: Date | null;
   deactivated_at: Date | null;
+  /** The identity provider's subject, once the user has signed in with single sign-on. */
+  auth_sub: string | null;
 }
 
 export const iso = (value: Date | string | null | undefined): string | null =>

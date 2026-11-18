@@ -34,6 +34,8 @@ export interface User {
 
 export interface Member extends User {
   deactivatedAt: string | null;
+  /** Present when single sign-on is on: the identity provider manages this member's role and access. */
+  ssoManaged?: boolean;
 }
 
 /** Compact user reference embedded in pages, comments, versions and notifications. */
@@ -66,6 +68,16 @@ export interface PublicWorkspace {
 
 export interface SetupStatus {
   needsSetup: boolean;
+}
+
+/** How people sign in: `sso.enabled` adds single sign-on, and `sso.localLogin` keeps passwords alongside it. */
+export interface AuthConfig {
+  sso: { enabled: boolean; localLogin: boolean };
+}
+
+export interface LogoutResponse {
+  /** Where to send the browser to end the identity provider's session too. */
+  logoutUrl?: string;
 }
 
 export interface SessionInfo {

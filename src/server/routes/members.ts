@@ -1,10 +1,12 @@
 import type { WorkspaceRole } from "common/api-types";
+import { config } from "server/config";
 import { sql } from "server/db";
 import { revokeUserSessions } from "server/lib/auth";
 import { removeImage } from "server/lib/files";
 import { badRequest, forbidden, get, notFound, post, readJson } from "server/lib/http";
 import { requireWorkspaceAdmin } from "server/lib/permissions";
 import { escapeLike } from "server/lib/search";
+import { requireLocallyManaged } from "server/lib/sso";
 import { findUserById, toMember, toUser, type UserRow } from "server/lib/users";
 import { Input, input } from "server/lib/validate";
 import { disconnectUser, membershipChanged } from "server/realtime/hub";
@@ -40,7 +42,10 @@ export const routes = [
           (await sql`SELECT count(*) AS n FROM users u WHERE ${q} = '' OR lower(u.name) LIKE ${like} OR lower(u.email) LIKE ${like}`)[0]
             .n,
         );
-    return { items: rows.map((row: UserRow) => toMember(row, ctx.user.id)), total };
+    // With single sign-on on, members it manages are marked, so admins see why they can't change them here.
+    const sso = config.sso !== null;
+    const items = rows.map((row: UserRow) => ({ ...toMember(row, ctx.user.id), ...(sso ? { ssoManaged: row.auth_sub !== null } : {}) }));
+    return { items, total };
   }),
 
   post("/members/role", async (ctx) => {
@@ -48,6 +53,7 @@ export const routes = [
     const role = body.oneOf("role", ROLES);
     if (!role) throw badRequest("role is required");
     const target = await targetUser(ctx.user, body.uuid("userId"), true);
+    requireLocallyManaged(target);
     if ((role === "owner" || target.role === "owner") && ctx.user.role !== "owner") {
       throw forbidden("Only owners can grant or remove the owner role");
     }
@@ -65,6 +71,7 @@ export const routes = [
 
   post("/members/deactivate", async (ctx) => {
     const target = await targetUser(ctx.user, input(await readJson(ctx)).uuid("userId"));
+    requireLocallyManaged(target);
     await sql`UPDATE users SET deactivated_at = COALESCE(deactivated_at, now()), updated_at = now() WHERE id = ${target.id}`;
     await revokeUserSessions(target.id);
     disconnectUser(target.id);
@@ -73,6 +80,7 @@ export const routes = [
 
   post("/members/activate", async (ctx) => {
     const target = await targetUser(ctx.user, input(await readJson(ctx)).uuid("userId"));
+    requireLocallyManaged(target);
     await sql`UPDATE users SET deactivated_at = NULL, updated_at = now() WHERE id = ${target.id}`;
     return {};
   }),
