@@ -86,9 +86,13 @@ const sessionUser = async (row: Record<string, unknown>): Promise<AuthUser | nul
   const { session_id, session_last_seen_at, session_auth_sid, session_auth_refresh_token, session_auth_recheck_at, ...user } = row;
   const recheckAt = session_auth_recheck_at ? new Date(session_auth_recheck_at as Date) : null;
   // Only sessions started through the provider have a re-check. A password
-  // session ends while single sign-on is the only way in, and a provider's
-  // session ends once single sign-on is turned off, since nothing can re-check it.
-  if (recheckAt ? config.sso === null : !config.localLogin) {
+  // session ends while single sign-on is the only way in, and also once its
+  // account is linked to the provider, which then governs it: nothing would
+  // ever re-check it, so it could outlive the provider disabling the person.
+  // A provider's session ends once single sign-on is turned off, since
+  // nothing can re-check it either.
+  const linked = (user as { auth_sub?: string | null }).auth_sub != null;
+  if (recheckAt ? config.sso === null : !config.localLogin || (config.sso !== null && linked)) {
     await endSession(session_id as string);
     return null;
   }

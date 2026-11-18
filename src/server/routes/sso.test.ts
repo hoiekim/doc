@@ -786,4 +786,16 @@ describe("password sessions", () => {
     // Ended, not merely refused: turning single sign-on off doesn't bring it back.
     expect((await local.get("/me")).status).toBe(401);
   });
+
+  test("end once their account is linked to the provider, even with AUTH_LOCAL_LOGIN", async () => {
+    setEnv({ ...SSO_ENV, AUTH_LOCAL_LOGIN: "true" });
+    const local = t.client();
+    expect((await local.post("/auth/login", { email: "olga@example.com", password: "member-password" })).status).toBe(200);
+    expect((await local.get("/me")).status).toBe(200);
+    // Olga signs in through the provider elsewhere, which links her account by email.
+    const sso = await ssoSignIn({ sub: "usr_olga", username: "olga", email: "olga@example.com" });
+    expect((await sso.client.get("/me")).status).toBe(200);
+    // The password session no longer serves: the provider governs the account now.
+    expect((await local.get("/me")).status).toBe(401);
+  });
 });

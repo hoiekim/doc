@@ -137,7 +137,8 @@ linked to someone else is refused. The name, and a verified email, are copied fr
   members the first time they sign in. Password sessions that already exist end at their next request.
 - An account linked to the provider signs in only through it, even with `AUTH_LOCAL_LOGIN` on, so a person the
   provider disabled can't come back with a password: password sign-in fails for it as for an unknown address,
-  **Forgot password?** sends it nothing, and a reset link sent before it was linked no longer works.
+  **Forgot password?** sends it nothing, a reset link sent before it was linked no longer works, and a password
+  session it already had ends at its next request.
 - On an empty database, the first person to sign in sets up the workspace and gets the provider's role: give
   them `owner` in the provider.
 - The provider decides who may sign in through it. Its role (`owner`, `admin`, `member`; anything else counts as
