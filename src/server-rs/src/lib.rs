@@ -6,4 +6,5 @@
 //! port, so the two can be read side by side.
 
 pub mod common;
+pub mod content;
 pub mod jsutil;
