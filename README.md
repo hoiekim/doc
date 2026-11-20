@@ -98,8 +98,10 @@ provider before someone signs in with it.
 The server checks these at start and refuses to start, listing every problem, when one is missing or malformed.
 Sign-in needs https (or `localhost`): the login cookie is `Secure`.
 
-Register doc in the provider's services file as a service whose roles are `member`, `admin` and `owner`, with a
-confidential client (the `mfa_roles` and `signup` policy are the deployment's choice):
+Register doc with the provider as a service whose roles are `member`, `admin` and `owner`, with a confidential
+client (the `mfa_roles` and `signup` policy are the deployment's choice). Where the provider registers services on
+its admin page, do it there: once the client's secret is made, the page lists the `AUTH_*` lines to paste into
+doc's environment. A provider configured by a services file takes the same definition there:
 
 ```json
 {
