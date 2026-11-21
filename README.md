@@ -201,12 +201,14 @@ TEST_DATABASE_URL=postgres://localhost:5432/doc_test bun run test:api:rust   # t
 `src/server-rs` is the same backend written in Rust, side by side with `src/server`: the same API, database,
 migrations, storage and environment variables. It is held to the Bun server's behaviour by the API suite and
 by fixtures generated from the TypeScript; `src/server-rs/README.md` says how, and lists the few known
-differences (the main one: it does not encrypt its database connections).
+differences (the main one: it cannot connect to Postgres over TLS).
 
 ```sh
 bun run build-client && bun run build-server-rs
 ./target/release/doc-server                      # or: docker build -f Dockerfile.rust .
 ```
+
+The binary reads the environment only; unlike Bun it does not load `.env` (`set -a; . ./.env; set +a` first).
 
 ## Architecture
 

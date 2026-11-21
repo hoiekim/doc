@@ -85,7 +85,7 @@ impl S3Driver {
             .unwrap_or_default();
         let (host, prefix) =
             if config.force_path_style { (endpoint_host, format!("/{}", encode(&bucket))) } else { (format!("{bucket}.{endpoint_host}"), String::new()) };
-        let http = reqwest::Client::builder()
+        let http = crate::http::https_client()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()

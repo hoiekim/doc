@@ -87,14 +87,21 @@ pub async fn upgrade(mut request: Request<Incoming>, user: AuthUser, session: Au
 
 type Stream = WebSocketStream<TokioIo<Upgraded>>;
 
-async fn write_loop(mut sink: futures_util::stream::SplitSink<Stream, Message>, mut outgoing: UnboundedReceiver<Outgoing>) {
+async fn write_loop(
+    mut sink: futures_util::stream::SplitSink<Stream, Message>,
+    mut outgoing: UnboundedReceiver<Outgoing>,
+    backlog: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
     loop {
         tokio::select! {
             next = outgoing.recv() => match next {
                 Some(Outgoing::Text(text)) => {
-                    if sink.send(Message::text(text)).await.is_err() {
+                    let size = text.len();
+                    let sent = sink.send(Message::text(text)).await;
+                    backlog.fetch_sub(size, std::sync::atomic::Ordering::SeqCst);
+                    if sent.is_err() {
                         return;
                     }
                 }
@@ -176,8 +183,9 @@ async fn serve(upgraded: Upgraded, user: AuthUser, session: AuthSession, spaces:
     let stream = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config)).await;
     let (sink, mut incoming) = stream.split();
     let (sender, outgoing) = unbounded_channel();
-    let ws = Socket::new(uuid(), session.id, user.id, user.name, spaces, sender);
-    let writer = tokio::spawn(write_loop(sink, outgoing));
+    let backlog = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ws = Socket::new(uuid(), session.id, user.id, user.name, spaces, sender, backlog.clone());
+    let writer = tokio::spawn(write_loop(sink, outgoing, backlog));
 
     // Turned away here, not refused at the upgrade: clients back off further
     // after each connection that fails, and not after one that opened, so

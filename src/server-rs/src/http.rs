@@ -436,6 +436,21 @@ pub fn parse_body_json(bytes: &[u8]) -> Option<Value> {
     crate::jsutil::parse_json_text(&String::from_utf8_lossy(bytes), true).ok()
 }
 
+/// A builder for the server's own HTTPS requests (the identity provider, S3)
+/// that also trusts the authorities in `NODE_EXTRA_CA_CERTS`, as Bun's `fetch`
+/// does and as the mail connection does (`smtp.rs`).
+pub fn https_client() -> reqwest::ClientBuilder {
+    let mut builder = reqwest::Client::builder();
+    if let Ok(path) = std::env::var("NODE_EXTRA_CA_CERTS") {
+        if let Ok(pem) = std::fs::read(&path) {
+            for certificate in reqwest::Certificate::from_pem_bundle(&pem).unwrap_or_default() {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+    }
+    builder
+}
+
 /// Reads what is left of a request body, so the connection stays usable
 /// after an answer that did not need all of it (Bun does the same).
 pub fn drain_unread(body: Incoming) {
@@ -605,6 +620,12 @@ pub async fn read_form(ctx: &mut Ctx, limit: usize) -> Result<Form> {
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| malformed())?;
         if let Ok(data) = frame.into_data() {
+            // A body that declares no length is counted as it arrives, so it
+            // cannot grow past the limit in memory either.
+            if bytes.len() + data.len() > limit {
+                ctx.body = Some(body);
+                return Err(too_large("File is too large"));
+            }
             bytes.extend_from_slice(&data);
         }
     }

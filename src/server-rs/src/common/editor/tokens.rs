@@ -111,8 +111,20 @@ fn push_text(into: &mut Vec<Value>, text: String, marks: &Marks) {
     into.push(text_node(text, marks));
 }
 
+/// How deep a document may be nested: the limit `validate_doc` puts on a
+/// document that arrives whole.
+pub const MAX_DOC_DEPTH: usize = 100;
+
 /// Rebuilds nodes from tokens; `Ok(None)` when the tokens are not balanced.
-pub fn build(tokens: &[Token]) -> Result<Option<Vec<Value>>, StepError> {
+/// `base_depth` is the depth of the node the tokens are the content of (0 for
+/// the document itself).
+///
+/// The slice of a step is a flat list, so one message could open tens of
+/// thousands of nodes inside each other, and everything that then walks the
+/// tree would run out of stack. JavaScript catches that (`RangeError`) and
+/// refuses the step; here the process would die. So nesting past
+/// `MAX_DOC_DEPTH` is refused while the tree is still a list.
+pub fn build(tokens: &[Token], base_depth: usize) -> Result<Option<Vec<Value>>, StepError> {
     struct Frame {
         node: Map<String, Value>,
         content: Vec<Value>,
@@ -150,6 +162,9 @@ pub fn build(tokens: &[Token]) -> Result<Option<Vec<Value>>, StepError> {
         match token {
             Token::Leaf { node, .. } => stack.last_mut().map_or(&mut root, |frame| &mut frame.content).push(node.clone()),
             Token::Open { node_type, attrs, marks } => {
+                if base_depth + 1 + stack.len() > MAX_DOC_DEPTH {
+                    return Err(StepError::Invalid("The document would be nested too deeply".into()));
+                }
                 let mut node = Map::new();
                 node.insert("type".into(), node_type.clone());
                 if let Some(attrs) = attrs {
@@ -401,7 +416,7 @@ mod tests {
         let mut tokens = Vec::new();
         flatten(children(&d), &Arc::from("doc"), &mut tokens);
         assert_eq!(tokens.len(), content_size(&d));
-        let built = build(&tokens).unwrap().unwrap();
+        let built = build(&tokens, 0).unwrap().unwrap();
         assert_eq!(Value::Array(built), d["content"]);
         let items = nodes_to_items(children(&d));
         assert_eq!(items[0], json!({ "o": "paragraph" }));
@@ -409,7 +424,7 @@ mod tests {
         assert_eq!(items[2], json!({ "n": { "type": "hardBreak" } }));
         assert_eq!(items[3], json!({ "t": "b", "m": [{ "type": "bold" }] }));
         assert_eq!(items[4], json!({ "c": 1 }));
-        let again = build(&from_items(&items).unwrap()).unwrap().unwrap();
+        let again = build(&from_items(&items).unwrap(), 0).unwrap().unwrap();
         assert_eq!(Value::Array(again), d["content"]);
     }
 
@@ -429,11 +444,26 @@ mod tests {
     }
 
     #[test]
+    fn nesting_past_the_limit_does_not_build() {
+        let nested = |depth: usize| {
+            let mut tokens: Vec<Token> = (0..depth).map(|_| Token::Open { node_type: json!("blockquote"), attrs: None, marks: None }).collect();
+            tokens.extend((0..depth).map(|_| Token::Close));
+            tokens
+        };
+        assert!(build(&nested(MAX_DOC_DEPTH), 0).unwrap().is_some());
+        assert!(matches!(build(&nested(MAX_DOC_DEPTH + 1), 0), Err(StepError::Invalid(_))));
+        // Inside a node that is itself one level down, one level less fits.
+        assert!(matches!(build(&nested(MAX_DOC_DEPTH), 1), Err(StepError::Invalid(_))));
+        // Deep enough to run out of stack if the tree were built and walked.
+        assert!(matches!(build(&nested(200_000), 0), Err(StepError::Invalid(_))));
+    }
+
+    #[test]
     fn unbalanced_tokens_do_not_build() {
-        assert!(build(&[Token::Close]).unwrap().is_none());
-        assert!(build(&[Token::Open { node_type: json!("paragraph"), attrs: None, marks: None }]).unwrap().is_none());
+        assert!(build(&[Token::Close], 0).unwrap().is_none());
+        assert!(build(&[Token::Open { node_type: json!("paragraph"), attrs: None, marks: None }], 0).unwrap().is_none());
         let lone = [Token::Char { unit: 0xD83D, marks: None, parent: Arc::from("") }];
-        assert!(matches!(build(&lone), Err(StepError::Invalid(_))));
+        assert!(matches!(build(&lone, 0), Err(StepError::Invalid(_))));
         assert!(matches!(from_items(&[json!(5)]), Err(StepError::Malformed(_))));
         assert!(matches!(from_items(&[json!({ "t": 5 })]), Err(StepError::Malformed(_))));
         assert_eq!(from_items(&[json!({}), json!([])]).unwrap().len(), 2);

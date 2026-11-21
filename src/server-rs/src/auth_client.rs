@@ -354,7 +354,7 @@ impl AuthClient {
         check_options(&options)?;
         // `redirect: "manual"` and `AbortSignal.timeout(TIMEOUT_MS)`: the
         // timeout covers the whole call, the reading of the body included.
-        let http = reqwest::Client::builder()
+        let http = crate::http::https_client()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_millis(TIMEOUT_MS))
             .build()

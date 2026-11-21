@@ -10,6 +10,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::jsutil::js_json;
 
+/// How much may wait to be written to one socket (Bun's `backpressureLimit`).
+pub const MAX_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
+
 /// What the writer half of a socket is asked to do.
 #[derive(Debug)]
 pub enum Outgoing {
@@ -38,6 +41,8 @@ pub struct Socket {
     pages: Mutex<HashSet<String>>,
     pub window: Mutex<Window>,
     sender: UnboundedSender<Outgoing>,
+    /// Bytes handed to the writer that it has not written yet.
+    backlog: Arc<std::sync::atomic::AtomicUsize>,
     open: AtomicBool,
     closing: tokio::sync::Notify,
 }
@@ -56,6 +61,7 @@ impl Socket {
         user_name: String,
         spaces: Vec<String>,
         sender: UnboundedSender<Outgoing>,
+        backlog: Arc<std::sync::atomic::AtomicUsize>,
     ) -> SocketRef {
         Arc::new(Socket {
             connection_id,
@@ -66,16 +72,29 @@ impl Socket {
             pages: Mutex::new(HashSet::new()),
             window: Mutex::new(Window::default()),
             sender,
+            backlog,
             open: AtomicBool::new(true),
             closing: tokio::sync::Notify::new(),
         })
     }
 
     /// `ws.send(text)`. Nothing is sent once the socket is closing.
+    ///
+    /// A peer that stops reading must not make the server keep everything it
+    /// would have been sent. Bun stops queueing at 16 MiB and drops what comes
+    /// after; a client with a hole in what it received is out of step for
+    /// good, so here the socket is closed instead and the client starts over.
     pub fn send_text(&self, text: String) {
-        if self.is_open() {
-            let _ = self.sender.send(Outgoing::Text(text));
+        if !self.is_open() {
+            return;
         }
+        let waiting = self.backlog.fetch_add(text.len(), Ordering::SeqCst) + text.len();
+        if waiting > MAX_BACKLOG_BYTES {
+            self.backlog.fetch_sub(text.len(), Ordering::SeqCst);
+            self.close(1008, "too far behind");
+            return;
+        }
+        let _ = self.sender.send(Outgoing::Text(text));
     }
 
     /// `ws.send(JSON.stringify(message))`.

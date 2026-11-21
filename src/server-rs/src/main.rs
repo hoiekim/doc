@@ -113,7 +113,17 @@ async fn run() -> Result<(), AppError> {
                 let app = app.clone();
                 let service = service_fn(move |request| {
                     let app = app.clone();
-                    async move { Ok::<_, std::convert::Infallible>(handle(&app, request, peer).await) }
+                    async move {
+                        // A request that has started is handled to its end even when its client
+                        // goes away, as in Bun: hyper drops this future then, and a handler cut
+                        // off between a write and what must follow it (the re-check of open
+                        // sockets, the bookkeeping of a save) would leave the two apart.
+                        let handled = tokio::spawn(async move { handle(&app, request, peer).await });
+                        Ok::<_, std::convert::Infallible>(match handled.await {
+                            Ok(response) => response,
+                            Err(_) => doc_server::http::fail(500, "internal_error", "Something went wrong"),
+                        })
+                    }
                 });
                 let connection = http.serve_connection(TokioIo::new(stream), service).with_upgrades();
                 let mut stopping = stopping.clone();

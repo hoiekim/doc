@@ -159,7 +159,7 @@ fn splice(doc: &mut Value, from: usize, to: usize, make: &mut dyn FnMut(Vec<Toke
             let replaced = make(segment, local_from - seg_start, local_to - seg_start)?;
             (i, j, replaced, container_type)
         };
-        let Some(built) = build(&replaced)? else { continue };
+        let Some(built) = build(&replaced, d)? else { continue };
         // Reading the type of a child that is `null` is where the original throws.
         if built.iter().any(Value::is_null) {
             return Err(StepError::Malformed("a slice holds an empty node".into()));

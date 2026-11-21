@@ -10,8 +10,11 @@ mixed pair.
 ```sh
 cargo build --release -p doc-server        # or: bun run build-server-rs
 bun run build-client                       # the web app, served from build/client
-./target/release/doc-server                # reads the same .env variables as the Bun server
+./target/release/doc-server                # the same environment variables as the Bun server
 ```
+
+The binary reads its settings from the environment only. Bun loads a `.env` file by itself; for this server
+export it first (`set -a; . ./.env; set +a`), or it starts on the defaults.
 
 `Dockerfile.rust` builds the image with this server in place of the Bun one. The binary is about 14 MB and
 idles at about 3 MiB of memory.
@@ -64,8 +67,12 @@ A change to the API is made in both servers and pinned once in `src/api-tests`.
 
 Deliberate, small, and none reachable by the web client in normal use:
 
-- **Database connections are not encrypted.** `sslmode` in `DATABASE_URL` is not acted on; the server
-  connects without TLS (TCP or a Unix socket). Use the Bun server where Postgres requires TLS.
+- **It cannot reach Postgres over TLS.** With `sslmode=require` in `DATABASE_URL` it refuses to start (the
+  handshake fails) rather than connect unencrypted, and `verify-ca` or `verify-full` are refused as an invalid
+  connection string. Without `sslmode`, or with `prefer` or `disable`, it connects without TLS, over TCP or a
+  Unix socket. Use the Bun server where Postgres requires TLS.
+- An edit that would nest the document more than 100 levels deep is refused, which is the limit for a document
+  that arrives whole. The Bun server takes such an edit as long as its stack holds (some thousands of levels).
 - An edit that would cut a surrogate pair in half is refused as invalid. The Bun server accepts it and then
   fails every save of that page.
 - JSON nested more than 512 levels deep is refused as malformed (a document may be 100 nodes deep, about 200
@@ -77,6 +84,11 @@ Deliberate, small, and none reachable by the web client in normal use:
   implementation), and an entry within a few bytes of not compressing may be stored instead.
 - S3: a failed request is not retried (Bun's client retries a PUT up to three times), and an upload that
   passes the size limit is aborted rather than completed and deleted. The outcome in the bucket is the same.
+- A multipart upload sent without a `Content-Length` is refused with 413 as soon as it has passed the size of
+  a form; the Bun server reads it to its end (up to the limit for any body) and then refuses the image, with
+  another message.
+- A socket whose client has stopped reading is closed (1008) once 16 MiB wait to be written to it. The Bun
+  server keeps the socket and drops what would go past that.
 - A stopping server refuses new connections at once; the Bun server accepts them until it has saved what it
   holds, and turns sockets away with 1013.
 - Letters, case and normalization come from the Unicode tables of the Rust standard library and crates, the
