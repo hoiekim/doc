@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod bases;
 pub mod comments;
+pub mod export;
 pub mod favorites;
 pub mod files;
 pub mod groups;

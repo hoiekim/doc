@@ -33,6 +33,7 @@ fn all_routes() -> Vec<Route> {
     all.extend(routes::health::routes());
     all.extend(routes::auth::routes());
     all.extend(routes::sso::routes());
+    all.extend(routes::bases::routes());
     all.extend(routes::me::routes());
     all.extend(routes::workspace::routes());
     all.extend(routes::members::routes());
@@ -40,6 +41,15 @@ fn all_routes() -> Vec<Route> {
     all.extend(routes::groups::routes());
     all.extend(routes::spaces::routes());
     all.extend(routes::pages::routes());
+    all.extend(routes::labels::routes());
+    all.extend(routes::favorites::routes());
+    all.extend(routes::watch::routes());
+    all.extend(routes::comments::routes());
+    all.extend(routes::files::routes());
+    all.extend(routes::search::routes());
+    all.extend(routes::shares::routes());
+    all.extend(routes::notifications::routes());
+    all.extend(routes::export::routes());
     all
 }
 
