@@ -188,7 +188,34 @@ pub fn escape_html(s: &str) -> String {
 
 const URI_UNRESERVED: &[u8] = b"-_.!~*'()";
 
-/// `encodeURIComponent(s)`.
+/// Whether the JavaScript string holds half a surrogate pair (see the carriers above).
+pub fn has_lone_surrogate(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match carried(ch) {
+            Some(0xD800..=0xDBFF) => match chars.peek().and_then(|next| carried(*next)) {
+                Some(0xDC00..=0xDFFF) => {
+                    chars.next();
+                }
+                _ => return true,
+            },
+            Some(_) => return true,
+            None => {}
+        }
+    }
+    false
+}
+
+/// `encodeURIComponent(s)`, or `None` where JavaScript throws a `URIError`:
+/// for a string that holds half a surrogate pair.
+pub fn try_encode_uri_component(s: &str) -> Option<String> {
+    if has_lone_surrogate(s) {
+        return None;
+    }
+    Some(encode_uri_component(&to_text(s)))
+}
+
+/// `encodeURIComponent(s)` for a string without half surrogate pairs.
 pub fn encode_uri_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &byte in s.as_bytes() {

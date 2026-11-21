@@ -87,7 +87,16 @@ pub fn content_disposition(kind: &str, name: &str) -> String {
             _ => '_',
         })
         .collect();
-    format!("{kind}; filename=\"{ascii}\"; filename*=UTF-8''{}", encode_uri_component(name))
+    format!("{kind}; filename=\"{ascii}\"; filename*=UTF-8''{}", encode_uri_component(&crate::jsutil::to_text(name)))
+}
+
+/// `contentDisposition` for a name that may have been cut inside a surrogate
+/// pair, where `encodeURIComponent` throws in the Bun server.
+pub fn try_content_disposition(kind: &str, name: &str) -> Result<String> {
+    if crate::jsutil::has_lone_surrogate(name) {
+        return Err(AppError::other("URI malformed"));
+    }
+    Ok(content_disposition(kind, name))
 }
 
 struct ImageType {

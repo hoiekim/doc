@@ -150,7 +150,7 @@ impl ZipWriter {
     pub async fn add_data(&mut self, name: &str, raw: &[u8]) -> io::Result<()> {
         self.check_count()?;
         let (time, date) = dos_date_time();
-        let name = name.as_bytes().to_vec();
+        let name = crate::jsutil::to_text(name).as_bytes().to_vec();
         let compressed = deflate(raw)?;
         let deflated = compressed.len() < raw.len();
         let body = if deflated { compressed } else { raw.to_vec() };
@@ -179,7 +179,7 @@ impl ZipWriter {
     pub async fn add_object(&mut self, name: &str, object: &StoredObject) -> io::Result<()> {
         self.check_count()?;
         let (time, date) = dos_date_time();
-        let entry = name.as_bytes().to_vec();
+        let entry = crate::jsutil::to_text(name).as_bytes().to_vec();
         if self.offset + object.size + 30 + entry.len() as u64 > LIMIT {
             return Err(io::Error::other("zip archive too large"));
         }

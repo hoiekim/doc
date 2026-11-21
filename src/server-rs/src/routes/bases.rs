@@ -21,7 +21,7 @@ use crate::common::ids::{is_uuid, slug_id};
 use crate::common::positions::key_between;
 use crate::common::text::doc_text;
 use crate::db::{array, begin, db, Conn};
-use crate::files::content_disposition;
+use crate::files::try_content_disposition;
 use crate::http::{bad_request, conflict, empty, get, not_found, post, read_json, read_json_limit, response, AppError, Ctx, Reply, Result, Route};
 use crate::jsutil::{is_integer, js_json, js_number, js_slice, js_trim, js_truthy_opt, same_json, utf16_len};
 use crate::logger;
@@ -1047,11 +1047,12 @@ async fn export_csv(ctx: &mut Ctx) -> Result<Reply> {
     let unsafe_chars = UNSAFE.get_or_init(|| Regex::new(r#"[\\/:*?"<>|\x00-\x1f]"#).expect("file name pattern"));
     let title = access.page.opt_str("title").filter(|title| !title.is_empty()).unwrap_or_else(|| "Untitled base".to_string());
     let name = js_slice(&unsafe_chars.replace_all(&title, "_"), 0, Some(150));
+    let disposition = try_content_disposition("attachment", &format!("{name}.csv"))?;
     Ok(response(
         200,
         &[
             ("Content-Type", "text/csv; charset=utf-8"),
-            ("Content-Disposition", &content_disposition("attachment", &format!("{name}.csv"))),
+            ("Content-Disposition", &disposition),
             ("Cache-Control", "no-store"),
         ],
         stream_body(stream),

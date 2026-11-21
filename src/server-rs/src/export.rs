@@ -15,9 +15,9 @@ use crate::common::text::{page_path, page_slug_id_from_href};
 use crate::config::config;
 use crate::content::{parse_file_url_str, rewrite_links};
 use crate::db::{array, db};
-use crate::files::content_disposition;
+use crate::files::try_content_disposition;
 use crate::http::{full_body, response, AppError, Body, Result};
-use crate::jsutil::{decode_uri_component, encode_uri_component, escape_html, is_regex_space, js_slice, js_string, js_trim, js_truthy};
+use crate::jsutil::{decode_uri_component, encode_uri_component, escape_html, has_lone_surrogate, is_regex_space, js_slice, js_string, js_trim, js_truthy};
 use crate::logger;
 use crate::sql;
 use crate::storage::{self, safe_file_name, stream_body, ByteStream};
@@ -188,7 +188,13 @@ fn render(
     let app_url = &config().app_url;
     let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let malformed = Cell::new(false);
-    let up = |path: &[String]| format!("{}{}", "../".repeat(dir.len()), encode_path(path));
+    let up = |path: &[String]| {
+        if path.iter().any(|part| has_lone_surrogate(part)) {
+            // `encodeURIComponent` throws here, which fails the export.
+            malformed.set(true);
+        }
+        format!("{}{}", "../".repeat(dir.len()), encode_path(path))
+    };
     let file_url = |src: &str| -> String {
         let Some(parsed) = parse_file_url_str(src) else { return src.to_string() };
         match ctx.files.get(&parsed.file_id) {
@@ -442,7 +448,7 @@ pub async fn export_pages(request: ExportRequest) -> Result<Response<Body>> {
             200,
             &[
                 ("Content-Type", if format == ExportFormat::Markdown { "text/markdown; charset=utf-8" } else { "text/html; charset=utf-8" }),
-                ("Content-Disposition", &content_disposition("attachment", &format!("{}.{ext}", page.base))),
+                ("Content-Disposition", &try_content_disposition("attachment", &format!("{}.{ext}", page.base))?),
                 ("X-Content-Type-Options", "nosniff"),
                 ("Content-Security-Policy", "sandbox"),
                 ("Cache-Control", "no-store"),
@@ -451,6 +457,7 @@ pub async fn export_pages(request: ExportRequest) -> Result<Response<Body>> {
         ));
     }
 
+    let disposition = try_content_disposition("attachment", &format!("{}.zip", export_name(Some(&request.archive_name))))?;
     let files: Vec<ExportFile> = file_rows.iter().map(|f| ExportFile { id: f.str("id"), storage_key: f.str("storage_key") }).collect();
     let archive = Archive { ctx, pages, files, user_id: request.user_id.clone(), ext };
     let (tx, rx) = mpsc::channel(8);
@@ -470,7 +477,7 @@ pub async fn export_pages(request: ExportRequest) -> Result<Response<Body>> {
         200,
         &[
             ("Content-Type", "application/zip"),
-            ("Content-Disposition", &content_disposition("attachment", &format!("{}.zip", export_name(Some(&request.archive_name))))),
+            ("Content-Disposition", &disposition),
             ("X-Content-Type-Options", "nosniff"),
             ("Cache-Control", "no-store"),
         ],

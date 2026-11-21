@@ -2,11 +2,10 @@
 
 use serde_json::{json, Value};
 
-use crate::common::text::title_slug;
+use crate::common::text::try_encoded_title_slug;
 use crate::config::config;
 use crate::db::{db, Row, Sql};
-use crate::http::Result;
-use crate::jsutil::encode_uri_component;
+use crate::http::{AppError, Result};
 use crate::sql;
 
 /// Shares aliased `sh` joined to their page (`sp`) so the public URL can be built.
@@ -30,26 +29,23 @@ pub struct ShareParts<'a> {
     pub page_slug_id: &'a str,
 }
 
-pub fn share_json(share: &ShareParts) -> Value {
-    json!({
+/// The `Share` the API returns. Fails where `encodeURIComponent` throws in
+/// the Bun server: for a title whose slug was cut inside a surrogate pair.
+pub fn share_json(share: &ShareParts) -> Result<Value> {
+    let slug = try_encoded_title_slug(share.page_title).ok_or_else(|| AppError::other("URI malformed"))?;
+    Ok(json!({
         "id": share.id,
         "key": share.key,
         "pageId": share.page_id,
         "includeChildren": share.include_children,
         "searchIndexing": share.search_indexing,
-        "url": format!(
-            "{}/share/{}/p/{}-{}",
-            config().app_url,
-            share.key,
-            encode_uri_component(&title_slug(share.page_title)),
-            share.page_slug_id
-        ),
+        "url": format!("{}/share/{}/p/{}-{}", config().app_url, share.key, slug, share.page_slug_id),
         "createdAt": share.created_at,
-    })
+    }))
 }
 
 /// `toShare(row)` for a row of [`share_query`].
-pub fn to_share(row: &Row) -> Value {
+pub fn to_share(row: &Row) -> Result<Value> {
     share_json(&ShareParts {
         id: &row.str("id"),
         key: &row.str("key"),

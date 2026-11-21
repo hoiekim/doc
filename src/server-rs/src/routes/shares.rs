@@ -63,7 +63,7 @@ fn joined_share_columns() -> Sql {
 }
 
 /// Splits a share joined to its page (aliased `p`) into the share and the page's tree item.
-fn split_joined(row: &Row) -> (Value, Map<String, Value>) {
+fn split_joined(row: &Row) -> Result<(Value, Map<String, Value>)> {
     let share = share_json(&ShareParts {
         id: &row.str("share_id"),
         key: &row.str("key"),
@@ -73,8 +73,8 @@ fn split_joined(row: &Row) -> (Value, Map<String, Value>) {
         created_at: row.iso("share_created_at"),
         page_title: row.opt_str("title").as_deref(),
         page_slug_id: &row.str("slug_id"),
-    });
-    (share, to_tree_item(row))
+    })?;
+    Ok((share, to_tree_item(row)))
 }
 
 async fn load_public_page(page_ref: &str) -> Result<Option<Row>> {
@@ -135,11 +135,15 @@ async fn state(ctx: &mut Ctx) -> Result<Reply> {
             joined_share_columns()
         ))
         .await?;
-    let inherited = inherited.map(|row| {
-        let (share, page) = split_joined(&row);
-        json!({ "share": share, "page": page })
-    });
-    Ok(json!({ "share": own.as_ref().map(to_share), "inheritedFrom": inherited }).into())
+    let own = own.as_ref().map(to_share).transpose()?;
+    let inherited = match inherited {
+        Some(row) => {
+            let (share, page) = split_joined(&row)?;
+            Some(json!({ "share": share, "page": page }))
+        }
+        None => None,
+    };
+    Ok(json!({ "share": own, "inheritedFrom": inherited }).into())
 }
 
 async fn create(ctx: &mut Ctx) -> Result<Reply> {
@@ -170,7 +174,7 @@ async fn create(ctx: &mut Ctx) -> Result<Reply> {
     ))
     .await?;
     let row = db().first(sql!("{} WHERE sh.page_id = {}", share_query(), &page_id)).await?;
-    Ok(json!({ "share": to_share(&row.ok_or_else(|| AppError::other("the share disappeared"))?) }).into())
+    Ok(json!({ "share": to_share(&row.ok_or_else(|| AppError::other("the share disappeared"))?)? }).into())
 }
 
 async fn delete(ctx: &mut Ctx) -> Result<Reply> {
@@ -194,18 +198,16 @@ async fn list(ctx: &mut Ctx) -> Result<Reply> {
             &space_id
         ))
         .await?;
-    let list: Vec<Value> = rows
-        .iter()
-        .map(|row| {
-            let (share, page) = split_joined(row);
-            let mut item = match share {
-                Value::Object(share) => share,
-                _ => Map::new(),
-            };
-            item.insert("page".into(), Value::Object(page));
-            Value::Object(item)
-        })
-        .collect();
+    let mut list: Vec<Value> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let (share, page) = split_joined(row)?;
+        let mut item = match share {
+            Value::Object(share) => share,
+            _ => Map::new(),
+        };
+        item.insert("page".into(), Value::Object(page));
+        list.push(Value::Object(item));
+    }
     Ok(Value::Array(list).into())
 }
 
@@ -213,7 +215,7 @@ async fn public_share(ctx: &mut Ctx) -> Result<Reply> {
     let Some(share) = find_public_share(ctx.param("key")).await? else { return Err(not_found("Share")) };
     let Some(page) = load_public_page(&share.str("page_id")).await? else { return Err(not_found("Share")) };
     let mut out = Map::new();
-    out.insert("share".into(), to_share(&share));
+    out.insert("share".into(), to_share(&share)?);
     out.insert("page".into(), public_page(&page, &share.str("key")).await?);
     if share.bool("include_children") {
         out.insert("tree".into(), Value::Array(shared_tree(&share.str("page_id")).await?));

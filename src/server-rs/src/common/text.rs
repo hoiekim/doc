@@ -177,6 +177,13 @@ pub fn title_slug(title: Option<&str>) -> String {
     slug(title).0
 }
 
+/// `encodeURIComponent(titleSlug(title))`, or `None` where that throws a
+/// `URIError`: the slug was cut inside a surrogate pair.
+pub fn try_encoded_title_slug(title: Option<&str>) -> Option<String> {
+    let (slug, split) = slug(title);
+    (!split).then(|| encode_uri_component(&slug))
+}
+
 fn path(space_slug: &str, slug: &str, slug_id: &str) -> String {
     format!("/s/{}/p/{}-{}", encode_uri_component(space_slug), encode_uri_component(slug), slug_id)
 }
