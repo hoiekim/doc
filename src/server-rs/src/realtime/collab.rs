@@ -69,6 +69,11 @@ pub struct PageSession {
     page_id: String,
     state: Mutex<State>,
     saving: tokio::sync::Mutex<()>,
+    /// Saves waiting for the one that is running.
+    waiting: std::sync::atomic::AtomicUsize,
+    /// Saves that have got their turn so far.
+    turns: std::sync::atomic::AtomicU64,
+    turn_taken: tokio::sync::Notify,
 }
 
 fn stored_doc(content: Value) -> Value {
@@ -88,6 +93,9 @@ impl PageSession {
         let saved_version = authority.version;
         Arc::new(PageSession {
             page_id: page_id.to_string(),
+            waiting: Default::default(),
+            turns: Default::default(),
+            turn_taken: tokio::sync::Notify::new(),
             state: Mutex::new(State {
                 clients: Vec::new(),
                 editors: Vec::new(),
@@ -133,13 +141,19 @@ impl PageSession {
             let mut st = self.state();
             st.save_timer += 1;
         }
+        self.waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let _saving = self.saving.lock().await;
         let (input, contributors) = {
             let mut st = self.state();
-            if !st.dirty {
+            let dirty = st.dirty;
+            st.dirty = false;
+            // This save has had its turn; see `after_waiting_saves`.
+            self.waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.turn_taken.notify_waiters();
+            if !dirty {
                 return;
             }
-            st.dirty = false;
             st.first_dirty_at = None;
             let contributors = std::mem::take(&mut st.editors);
             let input = SaveContentInput {
@@ -170,6 +184,23 @@ impl PageSession {
             }
             drop(st);
             logger::error_with("saving page content failed", &error, json!({ "pageId": self.page_id }));
+        }
+    }
+
+    /// In JavaScript, a save that waited for the running one starts (and so
+    /// takes the changes made meanwhile as its own) before whoever awaited the
+    /// running one goes on. This waits for such a save to have had its turn.
+    async fn after_waiting_saves(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let seen = self.turns.load(SeqCst);
+        loop {
+            let turn = self.turn_taken.notified();
+            tokio::pin!(turn);
+            turn.as_mut().enable();
+            if self.waiting.load(SeqCst) == 0 || self.turns.load(SeqCst) != seen {
+                return;
+            }
+            turn.await;
         }
     }
 
@@ -589,6 +620,7 @@ async fn replace_in(session: &Arc<PageSession>, page_id: &str, content: &Value, 
         st.authority_epoch
     };
     session.save().await;
+    session.after_waiting_saves().await;
     {
         let st = session.state();
         *saved = !st.dirty && st.authority_epoch == epoch;

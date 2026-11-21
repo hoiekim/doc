@@ -575,8 +575,35 @@ static POOL: OnceLock<Pool> = OnceLock::new();
 
 /// Connects the pool. libpq's `?host=/socket/dir` form is understood, and a
 /// URL without a user connects as the operating-system user, as libpq does.
+/// `?host=/socket/dir`: the directory of a Unix socket. The host name of the
+/// URL is then not used, and the socket is the one of the URL's port (5432
+/// without one), as in the Bun server.
+fn socket_config(url: &str) -> Option<tokio_postgres::Config> {
+    let parsed = url::Url::parse(url).ok()?;
+    let directory = parsed.query_pairs().find(|(key, value)| key == "host" && value.starts_with('/')).map(|(_, value)| value.into_owned())?;
+    let decode = |text: &str| crate::jsutil::decode_uri_component(text).unwrap_or_else(|| text.to_string());
+    let mut config = tokio_postgres::Config::new();
+    let directory = directory.trim_end_matches('/');
+    config.host_path(if directory.is_empty() { "/" } else { directory });
+    config.port(parsed.port().unwrap_or(5432));
+    if !parsed.username().is_empty() {
+        config.user(&decode(parsed.username()));
+    }
+    if let Some(password) = parsed.password() {
+        config.password(decode(password));
+    }
+    let database = decode(parsed.path().trim_start_matches('/'));
+    if !database.is_empty() {
+        config.dbname(&database);
+    }
+    Some(config)
+}
+
 pub fn connect(url: &str, max: usize) -> Result<(), DbError> {
-    let mut config = tokio_postgres::Config::from_str(url).map_err(DbError::Postgres)?;
+    let mut config = match socket_config(url) {
+        Some(config) => config,
+        None => tokio_postgres::Config::from_str(url).map_err(DbError::Postgres)?,
+    };
     if config.get_user().is_none() {
         config.user(&std::env::var("USER").unwrap_or_else(|_| "postgres".into()));
     }

@@ -173,7 +173,7 @@ process.on("exit", () => {
   if (layoutDir) rmSync(layoutDir, { recursive: true, force: true });
 });
 
-const collect = async (stream: ReadableStream<Uint8Array> | null | undefined, into: string[]) => {
+const collect = async (stream: ReadableStream<Uint8Array> | null | undefined, into: string[], label = "server") => {
   if (!stream) return;
   const decoder = new TextDecoder();
   let pending = "";
@@ -184,7 +184,7 @@ const collect = async (stream: ReadableStream<Uint8Array> | null | undefined, in
     const whole = lines.filter(Boolean);
     into.push(...whole);
     // `API_TEST_ECHO_LOGS=1` shows what the server under test logs, for debugging a failure.
-    if (process.env.API_TEST_ECHO_LOGS) for (const line of whole) console.error(`[server] ${line}`);
+    if (process.env.API_TEST_ECHO_LOGS) for (const line of whole) console.error(`[${label}] ${line}`);
   }
   if (pending) into.push(pending);
 };
@@ -238,7 +238,7 @@ export const startServer = async (options: StartOptions = {}): Promise<TestServe
     stdout: "pipe",
     stderr: "pipe",
   });
-  const drained = Promise.all([collect(proc.stdout, logs), collect(proc.stderr, logs)]);
+  const drained = Promise.all([collect(proc.stdout, logs, `server ${port}`), collect(proc.stderr, logs, `server ${port}`)]);
   const exited = proc.exited.then(async (code) => {
     await drained;
     return code;
