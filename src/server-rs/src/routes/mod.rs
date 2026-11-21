@@ -1,6 +1,7 @@
 //! Ports of `src/server/routes`.
 
 pub mod auth;
+pub mod comments;
 pub mod favorites;
 pub mod groups;
 pub mod health;
