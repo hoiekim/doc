@@ -255,7 +255,6 @@ describe("GET /bases/:id/export.csv", () => {
     const sparse = await addRow(owner, base.id, { [title]: "Sparse", [number]: 0, [select]: "c", [date]: "March 5, 2026", [people]: ["nobody"], [page]: untitled.id, [checkbox]: false });
     const hidden = await addRow(owner, base.id, { [title]: "Hidden", [page]: secret.id, [person]: "not-a-user", [date]: "2026-03-05T10:20:30Z" });
     const empty = await addRow(owner, base.id, {});
-    // A formula error: remove what the number formula depends on, for one base-wide effect, later.
     const text = (await exportCsv(owner, base.id)).text;
     const header = "Title,Long,Number,Select,Status,Multi,Date,Person,People,File,Page,Checkbox,Url,Email,Created,Edited,Editor,F number,F text,F flag,F date,F empty";
     expect(text).toBe(
@@ -329,6 +328,42 @@ describe("GET /bases/:id/export.csv", () => {
     },
     30_000,
   );
+
+  test("cells that hold JSON of another type than their property still export as some text", async () => {
+    const base = await createBase(owner, spaceId, { title: "Odd cells" });
+    await emptyBase(owner, base.id);
+    for (const p of base.properties.slice(1)) ok(await owner.post(`/bases/${base.id}/properties/${p.id}/delete`, {}));
+    const title = base.properties[0]!.id;
+    const choices = { choices: [{ id: "a", name: "Alpha" }] };
+    const ids: Record<string, string> = {};
+    for (const [name, type, options] of [
+      ["T", "text"],
+      ["N", "number"],
+      ["S", "select", choices],
+      ["M", "multiSelect", choices],
+      ["P", "person"],
+      ["F", "file"],
+      ["G", "page"],
+      ["C", "checkbox"],
+      ["U", "url"],
+    ] as [string, string, unknown?][]) {
+      ids[name] = (await addProperty(owner, base.id, name, type, options)).id;
+    }
+    const first = await addRow(owner, base.id, { [title]: "odd1" });
+    const second = await addRow(owner, base.id, { [title]: "odd2" });
+    // Only a direct write can leave these behind.
+    const cells = (values: Record<string, unknown>) => Object.fromEntries(Object.entries(values).map(([name, value]) => [ids[name]!, value]));
+    const odd1 = cells({ T: 12, N: "abc", S: "zzz", M: "a", P: ["unknown", ownerId], F: "not a list", G: 5, C: "yes", U: { k: 1 } });
+    const odd2 = cells({ T: ["a", "b"], N: true, M: ["a", 5, "zzz"], F: [{ fileName: 5 }, null, { fileName: "ok.txt" }], C: 1, U: null });
+    await t.sql`UPDATE base_rows SET cells = cells || ${odd1}::jsonb WHERE id = ${first.id}`;
+    await t.sql`UPDATE base_rows SET cells = cells || ${odd2}::jsonb WHERE id = ${second.id}`;
+    expect(await dataLines(base.id)).toEqual([
+      // Text-like cells print the JSON of what is not a string; choices and people print the names they can find;
+      // a checkbox is only true for `true`.
+      'odd1,12,abc,,Alpha,Owner,,,false,"{""k"":1}"',
+      'odd2,"[""a"",""b""]",true,,Alpha,,"5, ok.txt",,false,',
+    ]);
+  });
 
   test("errors are JSON answers, not CSV", async () => {
     const page = ok(await owner.post("/pages", { spaceId, title: "Not a base" })).page;
