@@ -35,6 +35,8 @@ let memberUser: any;
 let everyoneId: string;
 
 const DAY = 24 * 60 * 60 * 1000;
+/** The address of the suite's own connections: `localhost` is the IPv4 or the IPv6 loopback, depending on the machine. */
+const LOOPBACK = ["127.0.0.1", "::1"];
 
 beforeAll(async () => {
   t = await startServer();
@@ -872,9 +874,9 @@ describe("the client address behind a trusted proxy", () => {
   });
 
   test("when the last entry is empty, the address of the connection is used", async () => {
-    expect(await addressFor("203.0.113.1,")).toBe("127.0.0.1");
-    expect(await addressFor("203.0.113.1, ")).toBe("127.0.0.1");
-    expect(await addressFor("")).toBe("127.0.0.1");
+    expect(LOOPBACK).toContain(await addressFor("203.0.113.1,"));
+    expect(LOOPBACK).toContain(await addressFor("203.0.113.1, "));
+    expect(LOOPBACK).toContain(await addressFor(""));
   });
 
   test("rate limits follow that address: the same last entry is one client, whatever precedes it", async () => {
@@ -945,9 +947,9 @@ describe("a server with other settings: no trusted proxy, an https APP_URL and r
   test("without a trusted proxy X-Forwarded-For is ignored: sessions record the connection's address", async () => {
     const { client } = await signInAlt({ "X-Forwarded-For": "203.0.113.77" });
     const sessions = await client.get("/auth/sessions");
-    expect(sessions.body.data.find((s: any) => s.current).ip).toBe("127.0.0.1");
+    expect(LOOPBACK).toContain(sessions.body.data.find((s: any) => s.current).ip);
     const [row] = await alt.sql`SELECT ip FROM sessions WHERE token_hash = ${sha256(client.cookie!)}`;
-    expect(row.ip).toBe("127.0.0.1");
+    expect(LOOPBACK).toContain(row.ip);
     await client.post("/auth/logout");
   });
 

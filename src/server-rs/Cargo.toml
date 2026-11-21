@@ -2,7 +2,7 @@
 name = "doc-server"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.97"
 license = "Apache-2.0"
 publish = false
 description = "The doc backend in Rust: the same HTTP API, WebSocket collaboration and database as src/server"
@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", features = ["sink"] }
 bytes = "1"
+socket2 = "0.6"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"

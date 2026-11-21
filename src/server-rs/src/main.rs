@@ -46,6 +46,19 @@ async fn run_housekeeping() {
     }
 }
 
+/// Listens like `Bun.serve`: on every address of the machine, IPv6 and IPv4,
+/// through one socket (an IPv4 client's address reads as IPv4, see `app.rs`).
+fn listen_on_both(port: u16) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(false)?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+    socket.listen(1024)?;
+    TcpListener::from_std(socket.into())
+}
+
 /// Whether the server on this machine answers `GET /api/health`.
 async fn healthy() -> bool {
     let port = std::env::var("PORT").ok().and_then(|port| port.parse::<u16>().ok()).unwrap_or(3000);
@@ -66,7 +79,11 @@ async fn run() -> Result<(), AppError> {
     start_session_checks();
     let static_dir = resolve_static_dir();
     let app = Arc::new(App::new(static_dir.clone()));
-    let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], settings.port))).await?;
+    let listener = match listen_on_both(settings.port) {
+        Ok(listener) => listener,
+        // No IPv6 on this machine.
+        Err(_) => TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], settings.port))).await?,
+    };
     logger::info_with("server started", json!({ "port": listener.local_addr()?.port(), "staticDir": static_dir }));
 
     tokio::spawn(async {
