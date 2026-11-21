@@ -27,6 +27,7 @@ pub mod ratelimit;
 pub mod realtime;
 pub mod routes;
 pub mod search;
+pub mod shares;
 pub mod smtp;
 pub mod spaces;
 pub mod sso;
