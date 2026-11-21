@@ -303,7 +303,7 @@ describe("POST /workspace/logo and /workspace/logo/remove", () => {
     expectApiHeaders(res.headers);
 
     const name = url.split("/").pop()!;
-    expect(new Uint8Array(readFileSync(imagePath(t, url)))).toEqual(bytes);
+    expect([...readFileSync(imagePath(t, url))]).toEqual([...bytes]);
     expect(await rows(t.sql`SELECT purpose, page_id, space_id, uploader_id, name, mime, size::int AS size, storage_key FROM files WHERE purpose = 'workspace-logo'`)).toEqual([
       { purpose: "workspace-logo", page_id: null, space_id: null, uploader_id: ownerUser.id, name, mime, size: bytes.length, storage_key: `images/${name}` },
     ]);
@@ -318,7 +318,7 @@ describe("POST /workspace/logo and /workspace/logo/remove", () => {
     expect(image.status).toBe(200);
     expect(image.headers.get("content-type")).toBe(mime);
     expect(image.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
-    expect(new Uint8Array(await image.arrayBuffer())).toEqual(bytes);
+    expect([...new Uint8Array(await image.arrayBuffer())]).toEqual([...bytes]);
   });
 
   test("an admin may upload too; what is no image is refused and the logo stays", async () => {

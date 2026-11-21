@@ -484,7 +484,7 @@ describe("POST /me/avatar", () => {
     expectApiHeaders(res.headers);
 
     const name = url.split("/").pop()!;
-    expect(new Uint8Array(readFileSync(imagePath(t, url)))).toEqual(bytes);
+    expect([...readFileSync(imagePath(t, url))]).toEqual([...bytes]);
     expect(await rows(t.sql`SELECT purpose, page_id, space_id, uploader_id, name, mime, size::int AS size, storage_key FROM files WHERE uploader_id = ${user.id}`)).toEqual([
       { purpose: "avatar", page_id: null, space_id: null, uploader_id: user.id, name, mime, size: bytes.length, storage_key: `images/${name}` },
     ]);
@@ -500,7 +500,7 @@ describe("POST /me/avatar", () => {
     expect(image.headers.get("content-security-policy")).toBe("sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'");
     expect(image.headers.get("accept-ranges")).toBe("bytes");
     expect(image.headers.get("content-length")).toBe(String(bytes.length));
-    expect(new Uint8Array(await image.arrayBuffer())).toEqual(bytes);
+    expect([...new Uint8Array(await image.arrayBuffer())]).toEqual([...bytes]);
     expect((await client.get("/me")).body.data.user.avatarUrl).toBe(url);
   });
 
