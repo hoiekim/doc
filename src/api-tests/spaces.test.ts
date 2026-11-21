@@ -889,6 +889,45 @@ describe("POST /spaces/:id/members/remove", () => {
   });
 });
 
+describe("membership and open editors", () => {
+  test("someone editing a page is made read-only when demoted to reader, and turned out when removed", async () => {
+    const space = await createSpace(owner, "Editors", `editors-${++counter}`);
+    const editor = await person(t, owner, `editor-${counter}@example.com`, { space: space.id, spaceRole: "writer" });
+    const page = await createPage(owner, { spaceId: space.id, title: "Open" });
+    const socket = await openSocket(editor.client);
+    socket.send({ t: "join", pageId: page.id, version: 0 });
+    expect(await socket.nextOf("joined")).toEqual({ t: "joined", pageId: page.id, version: 0, readOnly: false });
+    const memberId = await memberRow(owner, space.id, editor.id);
+    data(await owner.post(`/spaces/${space.id}/members/role`, { memberId, role: "reader" }));
+    expect(await socket.nextOf("joined")).toEqual({ t: "joined", pageId: page.id, version: 0, readOnly: true });
+    data(await owner.post(`/spaces/${space.id}/members/add`, { role: "admin", userIds: [editor.id] }));
+    expect(await socket.nextOf("joined")).toEqual({ t: "joined", pageId: page.id, version: 0, readOnly: false });
+    data(await owner.post(`/spaces/${space.id}/members/remove`, { memberId }));
+    expect(await socket.nextOf("error")).toEqual({ t: "error", pageId: page.id, message: "You no longer have access to this page" });
+    await socket.close();
+  });
+
+  test("deleting the space turns its editors out", async () => {
+    const space = await createSpace(owner, "Editors gone", `editors-${++counter}`);
+    const page = await createPage(owner, { spaceId: space.id, title: "Open" });
+    const socket = await openSocket(owner);
+    socket.send({ t: "join", pageId: page.id, version: 0 });
+    expect((await socket.nextOf("joined")).readOnly).toBe(false);
+    data(await owner.post(`/spaces/${space.id}/delete`));
+    expect(await socket.nextOf("error")).toEqual({ t: "error", pageId: page.id, message: "You no longer have access to this page" });
+    await socket.close();
+  });
+});
+
+describe("characters the database refuses", () => {
+  test("a NUL character in a name or a description is a server error", async () => {
+    // Accident: PostgreSQL refuses the character and the failure surfaces as a 500 instead of a 400.
+    expectError(await owner.post("/spaces", { name: "a\u0000b", slug: "nul-name" }), 500, "internal_error", "Something went wrong");
+    expectError(await owner.post("/spaces", { name: "ok", slug: "nul-description", description: "\u0000" }), 500, "internal_error", "Something went wrong");
+    expectNotFound(await owner.get("/spaces/nul-name"), "Space");
+  });
+});
+
 describe("POST /spaces/:id/delete", () => {
   test("only space admins and workspace admins may delete", async () => {
     const space = await teamSpace("Delete guard");
