@@ -434,6 +434,7 @@ pub fn parse_body_json(bytes: &[u8]) -> Option<Value> {
     // A byte-order mark is not JSON; `TextDecoder` strips it before `JSON.parse` sees the text.
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text = String::from_utf8_lossy(bytes);
+    let text = crate::jsutil::carry_lone_surrogates(&text);
     let mut deserializer = serde_json::Deserializer::from_str(&text);
     deserializer.disable_recursion_limit();
     let mut value: Value = serde::Deserialize::deserialize(&mut deserializer).ok()?;

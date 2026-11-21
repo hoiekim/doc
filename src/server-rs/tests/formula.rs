@@ -335,22 +335,26 @@ fn error_values_match() {
 }
 
 // ---------------------------------------------------------------------------
-// Where JavaScript would cut a surrogate pair in half, the port keeps the
-// whole character. These are the cases the fixture marks `~`.
+// Where JavaScript cuts a surrogate pair in half, so does the port: the half
+// rides in a carrier (see `jsutil`) and is written as JavaScript writes it.
+// The fixture marks these cases `~`; the values here were read off Bun.
 
 #[test]
-fn half_characters_are_kept_whole() {
+fn half_characters_are_cut_as_javascript_cuts_them() {
     use_utc();
     let run = |source: &str| evaluate(source, &[], &Map::new(), "", "", 0.0);
-    assert_eq!(run("LEFT(\"😀abc\", 1)").1, "\"😀\"");
-    assert_eq!(run("LEFT(\"a😀bc\", 2)").1, "\"a😀\"");
-    assert_eq!(run("RIGHT(\"abc😀\", 1)").1, "\"😀\"");
-    assert_eq!(run("MID(\"a😀b\", 2, 1)").1, "\"😀\"");
-    assert_eq!(run("MID(\"a😀b\", 3, 1)").1, "\"😀\"");
-    assert_eq!(run("REPLACE(\"a😀b\", 2, 1, \"X\")").1, "\"aX😀b\"");
-    assert_eq!(run("SPLITPART(\"a😀b\", \"\", 2)").1, "\"😀\"");
-    assert_eq!(run("SPLITPART(\"a😀b\", \"\", 3)").1, "\"😀\"");
-    // The message names the whole character; the span is the one code unit JavaScript reports.
+    assert_eq!(run("LEFT(\"😀abc\", 1)").1, r#""\ud83d""#);
+    assert_eq!(run("LEFT(\"a😀bc\", 2)").1, r#""a\ud83d""#);
+    assert_eq!(run("RIGHT(\"abc😀\", 1)").1, r#""\ude00""#);
+    assert_eq!(run("MID(\"a😀b\", 2, 1)").1, r#""\ud83d""#);
+    assert_eq!(run("MID(\"a😀b\", 3, 1)").1, r#""\ude00""#);
+    assert_eq!(run("REPLACE(\"a😀b\", 2, 1, \"X\")").1, r#""aX\ude00b""#);
+    assert_eq!(run("SPLITPART(\"a😀b\", \"\", 2)").1, r#""\ud83d""#);
+    assert_eq!(run("SPLITPART(\"a😀b\", \"\", 3)").1, r#""\ude00""#);
+    // Two halves put back together are the character again.
+    assert_eq!(run("LEFT(\"😀\", 1) & RIGHT(\"😀\", 1)").1, "\"😀\"");
+    assert_eq!(run("LEN(LEFT(\"😀\", 1))").1, "1");
+    // The message names the whole character (JavaScript names its first half); the span is the one code unit JavaScript reports.
     assert_eq!(run("1 + 😀").0, "!Unexpected character \"😀\"@4,5");
 }
 

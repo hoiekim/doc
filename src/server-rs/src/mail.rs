@@ -10,6 +10,7 @@ use chrono::Utc;
 use serde_json::json;
 use tokio::sync::Notify;
 
+use crate::jsutil::to_text;
 use crate::common::ids::uuid;
 use crate::config::{config, MailDriver};
 use crate::jsutil::js_trim;
@@ -75,7 +76,7 @@ pub fn build_message(mail: &Mail, from_address: &str, from_name: &str) -> String
     [
         format!("From: {from}<{}>", strip_header(from_address)),
         format!("To: <{}>", strip_header(&mail.to)),
-        format!("Subject: {}", encode_word(&strip_header(&mail.subject))),
+        format!("Subject: {}", encode_word(&strip_header(&to_text(&mail.subject)))),
         format!("Date: {}", utc_string(Utc::now())),
         format!("Message-ID: <{}@{domain}>", uuid()),
         "MIME-Version: 1.0".to_string(),
@@ -85,12 +86,12 @@ pub fn build_message(mail: &Mail, from_address: &str, from_name: &str) -> String
         "Content-Type: text/plain; charset=UTF-8".to_string(),
         "Content-Transfer-Encoding: base64".to_string(),
         String::new(),
-        base64_lines(&mail.text),
+        base64_lines(&to_text(&mail.text)),
         format!("--{boundary}"),
         "Content-Type: text/html; charset=UTF-8".to_string(),
         "Content-Transfer-Encoding: base64".to_string(),
         String::new(),
-        base64_lines(&mail.html),
+        base64_lines(&to_text(&mail.html)),
         format!("--{boundary}--"),
         String::new(),
     ]

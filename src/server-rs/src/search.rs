@@ -57,9 +57,9 @@ pub fn escape_like(value: &str) -> String {
     out
 }
 
-/// UTF-16 units as a string; half of a surrogate pair cut by a window is dropped.
+/// UTF-16 units as a string; half of a surrogate pair cut by a window stays half.
 fn units_to_string(units: &[u16]) -> String {
-    char::decode_utf16(units.iter().copied()).filter_map(std::result::Result::ok).collect()
+    crate::jsutil::from_utf16_units(units)
 }
 
 /// The search terms of one query, compiled once for every excerpt it marks.
@@ -95,7 +95,7 @@ impl Highlighter {
         if source.is_empty() {
             return String::new();
         }
-        let units: Vec<u16> = source.encode_utf16().collect();
+        let units: Vec<u16> = crate::jsutil::utf16_units(source);
         let Some(pattern) = &self.pattern else {
             return escape_html(&units_to_string(&units[..units.len().min(WINDOW)]));
         };

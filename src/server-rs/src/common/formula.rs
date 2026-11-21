@@ -26,9 +26,9 @@
 //! property this formula uses was deleted".)
 //!
 //! Strings are measured and cut in UTF-16 code units wherever the TypeScript
-//! uses `length`, `slice`, `substr` or `indexOf`. A cut that would fall
-//! between the two halves of a surrogate pair cannot be represented in a
-//! Rust string; `jsutil::js_slice` keeps the whole character instead.
+//! uses `length`, `slice`, `substr` or `indexOf`. A cut that falls between
+//! the two halves of a surrogate pair leaves half a character, as it does in
+//! JavaScript; `jsutil` carries the half in a private-use code point.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};

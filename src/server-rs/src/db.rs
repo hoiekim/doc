@@ -100,21 +100,22 @@ impl IntoArg for &Sql {
     }
 }
 
+/// Text is bound as UTF-8, where half a surrogate pair becomes U+FFFD.
 impl IntoArg for &str {
     fn into_arg(self) -> Arg {
-        Arg::Param(Some(self.to_string()))
+        Arg::Param(Some(crate::jsutil::to_text(self).into_owned()))
     }
 }
 
 impl IntoArg for String {
     fn into_arg(self) -> Arg {
-        Arg::Param(Some(self))
+        self.as_str().into_arg()
     }
 }
 
 impl IntoArg for &String {
     fn into_arg(self) -> Arg {
-        Arg::Param(Some(self.clone()))
+        self.as_str().into_arg()
     }
 }
 
@@ -186,7 +187,7 @@ pub fn array<S: AsRef<str>>(values: &[S]) -> PgArray {
             out.push(',');
         }
         out.push('"');
-        for ch in value.as_ref().chars() {
+        for ch in crate::jsutil::to_text(value.as_ref()).chars() {
             if ch == '"' || ch == '\\' {
                 out.push('\\');
             }
@@ -352,6 +353,8 @@ fn decode(ty: &Type, raw: &[u8]) -> Result<Cell, Box<dyn StdError + Sync + Send>
         return Ok(Cell::Array(cells));
     }
     Ok(match *ty {
+        // A function without a result, such as `pg_advisory_xact_lock`.
+        Type::VOID => Cell::Null,
         Type::BOOL => Cell::Bool(pg::bool_from_sql(raw)?),
         Type::INT2 => Cell::Int(pg::int2_from_sql(raw)?.into()),
         Type::INT4 => Cell::Int(pg::int4_from_sql(raw)?.into()),

@@ -66,7 +66,7 @@ pub fn flatten(nodes: &[Value], parent: &Arc<str>, out: &mut Vec<Token>) {
         let ty = node_type(node);
         if ty == "text" {
             let marks = node_marks(node);
-            for unit in node.get("text").and_then(Value::as_str).unwrap_or("").encode_utf16() {
+            for unit in crate::jsutil::utf16_units(node.get("text").and_then(Value::as_str).unwrap_or("")) {
                 out.push(Token::Char { unit, marks: marks.clone(), parent: parent.clone() });
             }
         } else if schema().is_leaf(ty) {
@@ -190,7 +190,7 @@ pub fn to_items(tokens: &[Token]) -> Vec<Value> {
             return;
         }
         let mut item = Map::new();
-        item.insert("t".into(), Value::String(String::from_utf16_lossy(run)));
+        item.insert("t".into(), Value::String(crate::jsutil::from_utf16_units(run)));
         if let Some(marks) = run_marks.as_ref().filter(|m| !m.is_empty()) {
             item.insert("m".into(), Value::Array(marks.as_ref().clone()));
         }
@@ -268,7 +268,7 @@ pub fn from_items(items: &[Value]) -> Result<Vec<Token>, StepError> {
         if let Some(text) = item.get("t") {
             let Value::String(text) = text else { return Err(StepError::Malformed("slice text is not a string".into())) };
             let marks = item_marks(item);
-            for unit in text.encode_utf16() {
+            for unit in crate::jsutil::utf16_units(text) {
                 tokens.push(Token::Char { unit, marks: marks.clone(), parent: placeholder.clone() });
             }
         } else if let Some(node) = item.get("n") {

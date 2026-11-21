@@ -187,7 +187,10 @@ fn argon2() -> Argon2<'static> {
 }
 
 fn hash_blocking(password: &str) -> std::result::Result<String, String> {
-    let salt = SaltString::generate(&mut OsRng);
+    // Bun salts with 32 random bytes.
+    let mut bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut OsRng, &mut bytes);
+    let salt = SaltString::encode_b64(&bytes).map_err(|e| e.to_string())?;
     argon2().hash_password(password.as_bytes(), &salt).map(|hash| hash.to_string()).map_err(|e| e.to_string())
 }
 

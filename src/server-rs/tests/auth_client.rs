@@ -912,16 +912,17 @@ async fn credentials_in_a_url_are_sent_unless_the_request_has_its_own() {
     assert_eq!((seen[2].path.as_str(), seen[2].header("authorization")), ("/.well-known/jwks.json", Some("Basic dXMgZXI6cEBzcw==")));
 }
 
-/// A knowing difference: JavaScript's `error.slice(0, 64)` can leave half of
-/// a surrogate pair, which a Rust string cannot hold; the pair is kept whole.
+/// JavaScript's `error.slice(0, 64)` can leave half of a surrogate pair; the
+/// half rides in a carrier (see `jsutil`), so it is logged as Bun logs it.
 #[tokio::test]
-async fn an_error_parameter_is_cut_without_splitting_a_pair() {
+async fn an_error_parameter_cut_inside_a_pair_keeps_half_of_it() {
     let world = World::start(true).await;
     let started = world.client.start_login(StartLoginOptions::default()).await.unwrap();
     let cookie = started.login_cookie.split(';').next().unwrap();
     let error = format!("{}\u{1F600}z", "é".repeat(63));
     let refused = world.client.finish_login(Some(cookie), &[("error".into(), error)]).await.unwrap_err();
-    assert_eq!(refused, AuthError::Login { code: "authorization_error", error: Some(format!("{}\u{1F600}", "é".repeat(63))) });
+    let half = doc_server::jsutil::carrier(0xD83D);
+    assert_eq!(refused, AuthError::Login { code: "authorization_error", error: Some(format!("{}{half}", "é".repeat(63))) });
 }
 
 #[test]

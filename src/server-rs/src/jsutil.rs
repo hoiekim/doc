@@ -13,9 +13,70 @@ use serde_json::{Map, Number, Value};
 // ---------------------------------------------------------------------------
 // Strings
 
+// A JavaScript string is a sequence of UTF-16 code units and may hold half a
+// surrogate pair: `"\ud83d"` parses, and `"😀".slice(0, 1)` is one. What Bun
+// does with such a string is observable: written as UTF-8 (a text parameter,
+// a mail) the half becomes U+FFFD, and `JSON.stringify` writes it as an
+// escape, which Postgres refuses in `jsonb`. A Rust string cannot hold a lone
+// surrogate, so one rides in a "carrier": the private-use code point
+// U+10D800..=U+10DFFF with the same low bits. Everything here that counts or
+// cuts UTF-16 units treats a carrier as the single unit it stands for.
+// (A real character from that corner of the private-use plane is therefore
+// read as a lone surrogate; nothing assigns meaning to those code points.)
+
+const CARRIER_BASE: u32 = 0x10_0000;
+
+/// The carrier of a lone surrogate.
+pub fn carrier(unit: u16) -> char {
+    debug_assert!((0xD800..=0xDFFF).contains(&unit));
+    char::from_u32(CARRIER_BASE + u32::from(unit)).unwrap_or('\u{FFFD}')
+}
+
+/// The lone surrogate a carrier stands for.
+pub fn carried(ch: char) -> Option<u16> {
+    let code = ch as u32;
+    (0x10_D800..=0x10_DFFF).contains(&code).then(|| (code - CARRIER_BASE) as u16)
+}
+
+fn units_of(ch: char) -> usize {
+    if carried(ch).is_some() {
+        1
+    } else {
+        ch.len_utf16()
+    }
+}
+
+/// The UTF-16 code units of a JavaScript string.
+pub fn utf16_units(s: &str) -> Vec<u16> {
+    let mut units = Vec::with_capacity(s.len());
+    let mut pair = [0u16; 2];
+    for ch in s.chars() {
+        match carried(ch) {
+            Some(unit) => units.push(unit),
+            None => units.extend_from_slice(ch.encode_utf16(&mut pair)),
+        }
+    }
+    units
+}
+
+/// The JavaScript string with these UTF-16 code units; lone surrogates become carriers.
+pub fn from_utf16_units(units: &[u16]) -> String {
+    char::decode_utf16(units.iter().copied()).map(|unit| unit.unwrap_or_else(|lone| carrier(lone.unpaired_surrogate()))).collect()
+}
+
+/// The string as UTF-8 text leaves JavaScript: lone surrogates become U+FFFD
+/// (two halves that have come to stand next to each other are a character again).
+pub fn to_text(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().any(|ch| carried(ch).is_some()) {
+        std::borrow::Cow::Owned(char::decode_utf16(utf16_units(s)).map(|unit| unit.unwrap_or('\u{FFFD}')).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// `s.length`: the number of UTF-16 code units.
 pub fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
+    s.chars().map(units_of).sum()
 }
 
 /// `[...s].length`: the number of code points.
@@ -34,7 +95,7 @@ pub fn utf16_to_byte(s: &str, units: usize) -> Option<usize> {
         if seen == units {
             return Some(index);
         }
-        seen += ch.len_utf16();
+        seen += units_of(ch);
         if seen > units {
             return None;
         }
@@ -47,8 +108,7 @@ pub fn utf16_to_byte(s: &str, units: usize) -> Option<usize> {
 }
 
 /// `s.slice(start, end)` for offsets already clamped to `0..=s.length`, in
-/// UTF-16 units. `None` when an offset splits a surrogate pair (JavaScript
-/// would produce a lone surrogate, which a Rust string cannot hold).
+/// UTF-16 units. `None` when an offset splits a surrogate pair.
 pub fn utf16_slice(s: &str, start: usize, end: usize) -> Option<&str> {
     if start >= end {
         // Still validate the offsets so callers see the same failure.
@@ -61,7 +121,7 @@ pub fn utf16_slice(s: &str, start: usize, end: usize) -> Option<&str> {
 }
 
 /// `s.slice(start, end)` with JavaScript's clamping and negative offsets. A
-/// boundary inside a surrogate pair moves outward to keep the pair whole.
+/// boundary inside a surrogate pair leaves half of it, as a carrier.
 pub fn js_slice(s: &str, start: i64, end: Option<i64>) -> String {
     let len = utf16_len(s) as i64;
     let clamp = |v: i64| if v < 0 { (len + v).max(0) } else { v.min(len) };
@@ -70,19 +130,10 @@ pub fn js_slice(s: &str, start: i64, end: Option<i64>) -> String {
     if from >= to {
         return String::new();
     }
-    let mut out = String::new();
-    let mut pos = 0i64;
-    for ch in s.chars() {
-        let next = pos + ch.len_utf16() as i64;
-        if next > from && pos < to {
-            out.push(ch);
-        }
-        pos = next;
-        if pos >= to {
-            break;
-        }
+    if let Some(whole) = utf16_slice(s, from as usize, to as usize) {
+        return whole.to_string();
     }
-    out
+    from_utf16_units(&utf16_units(s)[from as usize..to as usize])
 }
 
 /// The first `count` code points: `[...s].slice(0, count).join("")`.
@@ -411,9 +462,63 @@ pub fn normalize_numbers(value: &mut Value) {
     }
 }
 
+fn hex4(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let mut value = 0u16;
+    for byte in &bytes[..4] {
+        value = value * 16 + (*byte as char).to_digit(16)? as u16;
+    }
+    Some(value)
+}
+
+/// Rewrites `\uXXXX` escapes of lone surrogates in a JSON text as carriers,
+/// which a JSON parser for Rust strings would otherwise refuse.
+pub fn carry_lone_surrogates(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("\\ud") && !text.contains("\\uD") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        if bytes.get(i + 1) != Some(&b'u') {
+            // An escaped character, possibly the backslash itself.
+            i += 2;
+            continue;
+        }
+        let Some(unit) = hex4(&bytes[i + 2..]) else {
+            i += 2;
+            continue;
+        };
+        if (0xD800..=0xDBFF).contains(&unit) {
+            let low = (bytes.get(i + 6) == Some(&b'\\') && bytes.get(i + 7) == Some(&b'u')).then(|| hex4(&bytes[i + 8..])).flatten();
+            if low.is_some_and(|low| (0xDC00..=0xDFFF).contains(&low)) {
+                i += 12;
+                continue;
+            }
+        }
+        if (0xD800..=0xDFFF).contains(&unit) {
+            out.push_str(&text[copied..i]);
+            out.push(carrier(unit));
+            copied = i + 6;
+        }
+        i += 6;
+    }
+    out.push_str(&text[copied..]);
+    std::borrow::Cow::Owned(out)
+}
+
 /// `JSON.parse(text)`, with numbers normalized.
 pub fn parse_json(text: &[u8]) -> Result<Value, serde_json::Error> {
-    let mut value: Value = serde_json::from_slice(text)?;
+    let decoded = String::from_utf8_lossy(text);
+    let mut value: Value = serde_json::from_str(&carry_lone_surrogates(&decoded))?;
     normalize_numbers(&mut value);
     Ok(value)
 }
@@ -429,7 +534,8 @@ fn array_index(key: &str) -> Option<u32> {
 
 fn write_json_string(out: &mut String, s: &str) {
     out.push('"');
-    for ch in s.chars() {
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
@@ -439,7 +545,19 @@ fn write_json_string(out: &mut String, s: &str) {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+            c => match carried(c) {
+                // Half a surrogate pair: well-formed `JSON.stringify` escapes it,
+                // unless the other half follows, which makes the character whole.
+                Some(high @ 0xD800..=0xDBFF) => match chars.peek().and_then(|next| carried(*next)).filter(|low| (0xDC00..=0xDFFF).contains(low)) {
+                    Some(low) => {
+                        chars.next();
+                        out.push_str(&from_utf16_units(&[high, low]));
+                    }
+                    None => out.push_str(&format!("\\u{high:04x}")),
+                },
+                Some(low) => out.push_str(&format!("\\u{low:04x}")),
+                None => out.push(c),
+            },
         }
     }
     out.push('"');

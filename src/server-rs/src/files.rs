@@ -79,8 +79,8 @@ pub fn is_inline_safe(mime: &str) -> bool {
 /// `Content-Disposition` with an ASCII fallback name and the real one in `filename*`.
 pub fn content_disposition(kind: &str, name: &str) -> String {
     // The replacement works on UTF-16 units, so a character outside the BMP becomes two underscores.
-    let ascii: String = name
-        .encode_utf16()
+    let ascii: String = crate::jsutil::utf16_units(name)
+        .into_iter()
         .map(|unit| match unit {
             0x22 | 0x5c => '_',
             0x20..=0x7e => unit as u8 as char,
