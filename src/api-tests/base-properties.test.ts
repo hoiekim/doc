@@ -124,7 +124,7 @@ describe("POST /bases/:id/properties", () => {
     expectInvalid(await create(base.id, { name: "x".repeat(201), type: "text" }), "name must be at most 200 characters");
     const longest = "😀".repeat(200);
     expect(ok(await create(base.id, { name: ` ${longest} `, type: "text" })).name).toBe(longest);
-    expect(ok(await create(base.id, { name: "مرحبا 日本語 é", type: "text" })).name).toBe("مرحبا 日本語 é");
+    expect(ok(await create(base.id, { name: "مرحبا 日本語 e\u0301", type: "text" })).name).toBe("مرحبا 日本語 e\u0301");
     // The name is checked before the type.
     expectInvalid(await create(base.id, { name: "", type: "nope" }), "name is required");
   });

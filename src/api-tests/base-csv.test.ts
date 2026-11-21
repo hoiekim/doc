@@ -24,7 +24,7 @@ afterAll(async () => {
   await t.close();
 });
 
-const BOM = "﻿";
+const BOM = "\uFEFF";
 
 /** Downloads the export; `text` is the body decoded without dropping the byte order mark. */
 const exportCsv = async (client: Client, ref: string) => {

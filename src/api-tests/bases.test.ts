@@ -200,7 +200,7 @@ describe("POST /bases", () => {
     expect(await create({})).toMatchObject({ title: null, icon: null });
     expect(await create({ title: null, icon: null })).toMatchObject({ title: null, icon: null });
     expect(await create({ title: " \t\n ", icon: "" })).toMatchObject({ title: null, icon: null });
-    expect(await create({ title: "مرحبا 日本語 é" })).toMatchObject({ title: "مرحبا 日本語 é" });
+    expect(await create({ title: "مرحبا 日本語 e\u0301" })).toMatchObject({ title: "مرحبا 日本語 e\u0301" });
   });
 
   test("title and icon lengths count code points: 500 and 100 are the most", async () => {
