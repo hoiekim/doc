@@ -16,7 +16,7 @@ use serde_json::{json, Map, Value};
 
 use crate::auth::{AuthSession, AuthUser};
 use crate::db::DbError;
-use crate::jsutil::{decode_uri_component, js_json, normalize_numbers, string_to_number};
+use crate::jsutil::{decode_uri_component, js_json, string_to_number};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -433,14 +433,51 @@ pub fn parse_body_json(bytes: &[u8]) -> Option<Value> {
     }
     // A byte-order mark is not JSON; `TextDecoder` strips it before `JSON.parse` sees the text.
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    let text = String::from_utf8_lossy(bytes);
-    let text = crate::jsutil::carry_lone_surrogates(&text);
-    let mut deserializer = serde_json::Deserializer::from_str(&text);
-    deserializer.disable_recursion_limit();
-    let mut value: Value = serde::Deserialize::deserialize(&mut deserializer).ok()?;
-    deserializer.end().ok()?;
-    normalize_numbers(&mut value);
-    Some(value)
+    crate::jsutil::parse_json_text(&String::from_utf8_lossy(bytes), true).ok()
+}
+
+/// Reads what is left of a request body, so the connection stays usable
+/// after an answer that did not need all of it (Bun does the same).
+pub fn drain_unread(body: Incoming) {
+    use http_body::Body as _;
+    if body.is_end_stream() {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let cap = crate::config::config().file_size_limit + 2 * 1024 * 1024;
+    runtime.spawn(async move {
+        let mut body = body;
+        let mut seen = 0u64;
+        let drain = async {
+            while let Some(Ok(frame)) = body.frame().await {
+                seen += frame.data_ref().map_or(0, |data| data.len() as u64);
+                if seen > cap {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), drain).await;
+    });
+}
+
+impl Drop for Ctx {
+    fn drop(&mut self) {
+        if let Some(body) = self.body.take() {
+            drain_unread(body);
+        }
+    }
+}
+
+/// A request body nobody has asked for yet; what is left of it when this is
+/// dropped is read and thrown away.
+pub struct Unread(pub Option<Incoming>);
+
+impl Drop for Unread {
+    fn drop(&mut self) {
+        if let Some(body) = self.0.take() {
+            drain_unread(body);
+        }
+    }
 }
 
 /// Parses a JSON object body. Requiring `application/json` means a cross-site

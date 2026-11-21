@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::auth::authenticate;
 use crate::config::config;
-use crate::http::{append_header, declared_length, fail, header, http_error, ok, unauthorized, AppError, Body, Ctx, Reply, Result, Route, Router};
+use crate::http::{append_header, declared_length, fail, header, http_error, ok, unauthorized, AppError, Body, Ctx, Reply, Result, Route, Router, Unread};
 use crate::jsutil::{js_slice, js_trim};
 use crate::logger::{self, log_request, RequestLog};
 use crate::realtime::ws::upgrade;
@@ -124,10 +124,12 @@ async fn route(app: &App, request: Request<Incoming>, target: Target, ip: String
         let Some(auth) = auth else { return Ok(fail(401, "unauthorized", "Sign in required")) };
         return upgrade(request, auth.user, auth.session).await;
     }
-    let method = request.method().as_str().to_string();
+    let (parts, body) = request.into_parts();
+    let mut unread = Unread(Some(body));
+    let method = parts.method.as_str().to_string();
     // The identity provider posts its events from its own server, each one signed.
     let provider_event = target.path == "/api/auth/events" && config().sso.is_some();
-    if method != "GET" && method != "HEAD" && !provider_event && !same_origin(request.headers()) {
+    if method != "GET" && method != "HEAD" && !provider_event && !same_origin(&parts.headers) {
         return Err(http_error(403, "forbidden_origin", "Cross-origin request rejected"));
     }
     let sub_path = &target.path["/api".len()..];
@@ -137,7 +139,6 @@ async fn route(app: &App, request: Request<Incoming>, target: Target, ip: String
     if !found.route.is_public && auth.is_none() {
         return Err(unauthorized());
     }
-    let (parts, body) = request.into_parts();
     let (user, session, refreshed) = match auth {
         Some(auth) => (Some(auth.user), Some(auth.session), auth.refreshed_cookie),
         None => (None, None, None),
@@ -152,7 +153,7 @@ async fn route(app: &App, request: Request<Incoming>, target: Target, ip: String
         user,
         session,
         cookies: refreshed.into_iter().collect(),
-        body: Some(body),
+        body: unread.0.take(),
     };
     let reply = (found.route.handler)(&mut ctx).await?;
     let mut response = match reply {

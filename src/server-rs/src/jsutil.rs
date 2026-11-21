@@ -542,12 +542,78 @@ pub fn carry_lone_surrogates(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// `JSON.parse(text)`, with numbers normalized.
-pub fn parse_json(text: &[u8]) -> Result<Value, serde_json::Error> {
-    let decoded = String::from_utf8_lossy(text);
-    let mut value: Value = serde_json::from_str(&carry_lone_surrogates(&decoded))?;
+/// Rewrites number literals too large for a double as the strings
+/// `"Infinity"` and `"-Infinity"`. `JSON.parse` reads such a literal as an
+/// infinite number, which JSON values here cannot hold; the text reads the
+/// same wherever the number is then converted (`Number("Infinity")`,
+/// `String(Infinity)`), which is what the server does with numbers it takes.
+fn overflowing_numbers_as_text(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut i = 0;
+    let mut in_string = false;
+    let mut copied = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            match byte {
+                b'\\' => i += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if byte == b'-' || byte.is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && matches!(bytes[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+                i += 1;
+            }
+            if text[start..i].parse::<f64>().is_ok_and(f64::is_infinite) {
+                out.push_str(&text[copied..start]);
+                out.push_str(if byte == b'-' { "\"-Infinity\"" } else { "\"Infinity\"" });
+                copied = i;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+fn parse_text_once(text: &str, any_depth: bool) -> Result<Value, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    if any_depth {
+        deserializer.disable_recursion_limit();
+    }
+    let value: Value = serde::Deserialize::deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
+}
+
+/// `JSON.parse(text)`: half surrogate pairs in escapes are kept (as
+/// carriers), numbers are normalized, and a number too large for a double
+/// reads as text (see `overflowing_numbers_as_text`). With `any_depth` the
+/// caller has bounded the nesting itself.
+pub fn parse_json_text(text: &str, any_depth: bool) -> Result<Value, serde_json::Error> {
+    let text = carry_lone_surrogates(text);
+    let mut value = match parse_text_once(&text, any_depth) {
+        Err(error) if error.to_string().starts_with("number out of range") => parse_text_once(&overflowing_numbers_as_text(&text), any_depth)?,
+        other => other?,
+    };
     normalize_numbers(&mut value);
     Ok(value)
+}
+
+/// `JSON.parse(text)`, with numbers normalized.
+pub fn parse_json(text: &[u8]) -> Result<Value, serde_json::Error> {
+    parse_json_text(&String::from_utf8_lossy(text), false)
 }
 
 /// A canonical array index (`"0"`, `"42"`), which JavaScript objects list
