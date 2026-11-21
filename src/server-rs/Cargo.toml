@@ -30,7 +30,7 @@ postgres-protocol = "0.6"
 fallible-iterator = "0.2"
 deadpool-postgres = "0.14"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth", "float_roundtrip"] }
 argon2 = "0.5"
 sha2 = "0.10"
 hmac = "0.12"
