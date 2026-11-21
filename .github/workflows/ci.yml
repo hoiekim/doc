@@ -95,6 +95,12 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
+      # The toolchain is pinned (rust-toolchain.toml): the port matches the Bun
+      # server only with that standard library's Unicode tables.
+      - name: Install the pinned Rust toolchain
+        if: matrix.server == 'rust'
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal
+
       # The Rust server's own tests compare its ports of src/common with
       # fixtures generated from the TypeScript (src/server-rs/tests/fixtures).
       - name: Test the Rust crate

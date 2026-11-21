@@ -79,8 +79,10 @@ Deliberate, small, and none reachable by the web client in normal use:
   passes the size limit is aborted rather than completed and deleted. The outcome in the bucket is the same.
 - A stopping server refuses new connections at once; the Bun server accepts them until it has saved what it
   holds, and turns sockets away with 1013.
-- Letters, case and normalization come from the Unicode tables of the Rust crates, the Bun server's from
-  JavaScriptCore; they agree up to Unicode 16.0 (`tests/text.rs` lists what differs after it).
+- Letters, case and normalization come from the Unicode tables of the Rust standard library and crates, the
+  Bun server's from JavaScriptCore; they agree up to Unicode 16.0 (`tests/text.rs` lists what differs after
+  it). That is why `rust-toolchain.toml` pins the toolchain: a newer standard library knows case pairs the
+  pinned Bun does not, and `cargo test` fails on it until both move.
 - The `error` text of a log line comes from the runtime where it is not the database's or the server's own
   message.
 

@@ -13,7 +13,8 @@ COPY src src
 
 RUN bun run build-client
 
-FROM rust:1-slim-bookworm AS server
+# The version rust-toolchain.toml pins: the server depends on its Unicode tables.
+FROM rust:1.97.0-slim-bookworm AS server
 
 WORKDIR /app
 
