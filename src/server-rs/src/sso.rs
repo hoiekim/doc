@@ -81,7 +81,7 @@ pub fn parse_link_users(value: Option<&str>) -> LinkUsers {
 fn url_problem(name: &str, value: Option<&str>, rule: fn(&Url) -> bool, requirement: &str) -> Vec<String> {
     let Some(value) = value else { return Vec::new() };
     if let Ok(url) = Url::parse(value) {
-        let plain = url.query().map_or(true, str::is_empty) && url.fragment().map_or(true, str::is_empty);
+        let plain = url.query().is_none_or(str::is_empty) && url.fragment().is_none_or(str::is_empty);
         if rule(&url) && plain {
             return Vec::new();
         }

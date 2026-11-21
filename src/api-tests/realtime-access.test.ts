@@ -397,10 +397,11 @@ describe("the spaces a socket hears about", () => {
     const ownerSocket = await open(owner);
     expect((await owner.post("/pages", { spaceId: other.space.id, title: "Elsewhere" })).status).toBe(200);
     expect((await owner.post("/pages", { spaceId: mine.space.id, title: "Here" })).status).toBe(200);
-    expect(await socket.next()).toEqual({ t: "event", kind: "tree", spaceId: mine.space.id });
-    expect(await ownerSocket.next()).toEqual({ t: "event", kind: "tree", spaceId: other.space.id });
-    expect(await ownerSocket.next()).toEqual({ t: "event", kind: "tree", spaceId: mine.space.id });
-    expect(await socket.quiet(() => true, 100)).toBe(true);
+    // Only tree events are looked at: the owner's socket may still be told of the member who just joined.
+    expect(await socket.nextOf("event", { kind: "tree" })).toEqual({ t: "event", kind: "tree", spaceId: mine.space.id });
+    expect(await ownerSocket.nextOf("event", { kind: "tree" })).toEqual({ t: "event", kind: "tree", spaceId: other.space.id });
+    expect(await ownerSocket.nextOf("event", { kind: "tree" })).toEqual({ t: "event", kind: "tree", spaceId: mine.space.id });
+    expect(await socket.quiet((m) => m.kind === "tree", 100)).toBe(true);
   });
 
   test("a space the user is added to is heard from then on, and one they are removed from no longer", async () => {

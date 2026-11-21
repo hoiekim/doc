@@ -104,7 +104,7 @@ fn opt(value: &Option<String>) -> Value {
 /// `toUser(row, viewerId)`: preferences are only shown to the user themselves
 /// (`viewer_id` of `None` is "no viewer given", which shows them).
 pub fn to_user(row: &UserRow, viewer_id: Option<&str>) -> Map<String, Value> {
-    let own = viewer_id.map_or(true, |viewer| viewer == row.id);
+    let own = viewer_id.is_none_or(|viewer| viewer == row.id);
     let preferences = if own && !row.preferences.is_null() { row.preferences.clone() } else { json!({}) };
     let mut user = Map::new();
     user.insert("id".into(), Value::String(row.id.clone()));

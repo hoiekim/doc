@@ -128,7 +128,7 @@ impl Schema {
     }
 
     pub fn in_group(&self, node_type: &str, group: &str) -> bool {
-        self.groups.get(group).is_some_and(|members| members.iter().any(|m| *m == node_type))
+        self.groups.get(group).is_some_and(|members| members.contains(&node_type))
     }
 
     pub fn group_members(&self, group: &str) -> &[&'static str] {

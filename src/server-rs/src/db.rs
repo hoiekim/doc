@@ -587,7 +587,7 @@ fn socket_config(url: &str) -> Option<tokio_postgres::Config> {
     config.host_path(if directory.is_empty() { "/" } else { directory });
     config.port(parsed.port().unwrap_or(5432));
     if !parsed.username().is_empty() {
-        config.user(&decode(parsed.username()));
+        config.user(decode(parsed.username()));
     }
     if let Some(password) = parsed.password() {
         config.password(decode(password));
@@ -605,7 +605,7 @@ pub fn connect(url: &str, max: usize) -> Result<(), DbError> {
         None => tokio_postgres::Config::from_str(url).map_err(DbError::Postgres)?,
     };
     if config.get_user().is_none() {
-        config.user(&std::env::var("USER").unwrap_or_else(|_| "postgres".into()));
+        config.user(std::env::var("USER").unwrap_or_else(|_| "postgres".into()));
     }
     if config.get_dbname().is_none() {
         let user = config.get_user().unwrap_or("postgres").to_string();

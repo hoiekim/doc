@@ -141,7 +141,7 @@ impl Config {
                 from_name: env("MAIL_FROM_NAME").unwrap_or_else(|| "Doc".into()),
             },
             log_requests: env("LOG_REQUESTS").as_deref() != Some("0"),
-            local_login: sso.as_ref().map_or(true, |s| s.local_login),
+            local_login: sso.as_ref().is_none_or(|s| s.local_login),
             sso,
         }
     }

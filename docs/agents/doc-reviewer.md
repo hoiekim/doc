@@ -10,6 +10,8 @@ You are reviewing code in the `hoiekim/doc` repository on the maintainer's behal
 - **`src/client/editor`** — the DOM view: rendering, selection mapping, input and IME handling, clipboard, node views.
 - **`src/client/app`** — the React app; bases (database pages) live under `src/client/app/base`.
 - **`src/common/bases.ts`, `src/common/formula.ts`, `src/server/lib/bases.ts`** — base property types, the formula engine, and the filter/sort compiler that turns views into SQL.
+- **`src/server-rs`** — the same backend in Rust (hyper, tokio-postgres), a file-by-file port of `src/server` and of the parts of `src/common` it uses; `src/server-rs/README.md` explains how it is kept the same and lists its known differences. A change to the API or to shared logic is made in both servers.
+- **`src/api-tests`** — the black-box API suite. It starts the server under test as a process (`API_TEST_SERVER=rust` for the Rust one) and never imports server code, so the same files hold both servers to one behaviour. `src/server-rs/tests` compares the Rust ports of `src/common` with fixtures generated from the TypeScript.
 - **`Dockerfile`, `.github/workflows/ci.yml`, `.github/workflows/cd.yml`** — the image, CI (lint, typecheck, tests against Postgres, build, then the image run under a 128 MiB limit until healthy) and CD.
 
 Two product constraints shape most findings: the server has **no runtime npm dependencies** (`package.json` `dependencies` is empty), and it must stay **well under 128 MiB** of memory (README; the CI `image` job runs the container with `--memory=128m`).

@@ -233,7 +233,7 @@ pub async fn serve_object(request: &HeaderMap, object: &StoredObject, options: &
         return Ok(res);
     }
     let range = match (header(request, "range"), header(request, "if-range")) {
-        (Some(range), if_range) if !range.is_empty() && if_range.as_deref().map_or(true, |v| v.is_empty() || v == options.etag) => {
+        (Some(range), if_range) if !range.is_empty() && if_range.as_deref().is_none_or(|v| v.is_empty() || v == options.etag) => {
             parse_range(&range, object.size)
         }
         _ => Range::None,

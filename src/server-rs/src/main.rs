@@ -46,6 +46,13 @@ async fn run_housekeeping() {
     }
 }
 
+/// Whether the server on this machine answers `GET /api/health`.
+async fn healthy() -> bool {
+    let port = std::env::var("PORT").ok().and_then(|port| port.parse::<u16>().ok()).unwrap_or(3000);
+    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(5)).no_proxy().build() else { return false };
+    matches!(client.get(format!("http://127.0.0.1:{port}/api/health")).send().await, Ok(response) if response.status().is_success())
+}
+
 async fn run() -> Result<(), AppError> {
     let problems = sso_problems();
     if !problems.is_empty() {
@@ -126,6 +133,11 @@ async fn run() -> Result<(), AppError> {
 
 #[tokio::main]
 async fn main() {
+    // `doc-server health`: the image's health check. The image has no shell
+    // tools to ask with, so the server asks itself.
+    if std::env::args().nth(1).as_deref() == Some("health") {
+        std::process::exit(if healthy().await { 0 } else { 1 });
+    }
     match run().await {
         Ok(()) => std::process::exit(0),
         Err(error) => {

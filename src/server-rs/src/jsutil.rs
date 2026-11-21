@@ -279,14 +279,14 @@ pub fn number_to_string(n: f64) -> String {
     }
     if k <= point && point <= 21 {
         out.push_str(&digits);
-        out.extend(std::iter::repeat('0').take((point - k) as usize));
+        out.extend(std::iter::repeat_n('0', (point - k) as usize));
     } else if 0 < point && point <= 21 {
         out.push_str(&digits[..point as usize]);
         out.push('.');
         out.push_str(&digits[point as usize..]);
     } else if -6 < point && point <= 0 {
         out.push_str("0.");
-        out.extend(std::iter::repeat('0').take((-point) as usize));
+        out.extend(std::iter::repeat_n('0', (-point) as usize));
         out.push_str(&digits);
     } else {
         let e = point - 1;
@@ -464,7 +464,7 @@ pub fn js_truthy_opt(value: Option<&Value>) -> bool {
 }
 
 /// `value ?? fallback` over an attribute lookup: `None` for a missing key or a JSON null.
-pub fn present<'a>(value: Option<&'a Value>) -> Option<&'a Value> {
+pub fn present(value: Option<&Value>) -> Option<&Value> {
     value.filter(|v| !v.is_null())
 }
 
@@ -477,7 +477,7 @@ pub fn present<'a>(value: Option<&'a Value>) -> Option<&'a Value> {
 pub fn normalize_numbers(value: &mut Value) {
     match value {
         Value::Number(n) => {
-            let needs = n.is_f64() || n.as_i64().map_or(true, |i| i.unsigned_abs() > (1u64 << 53));
+            let needs = n.is_f64() || n.as_i64().is_none_or(|i| i.unsigned_abs() > (1u64 << 53));
             if needs {
                 let f = number_value(n);
                 *value = number_json(f);
