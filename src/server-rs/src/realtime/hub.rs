@@ -15,6 +15,8 @@ use crate::jsutil::js_json;
 pub enum Outgoing {
     Text(String),
     Close(u16, &'static str),
+    /// The peer closed: answer its close frame and stop writing.
+    End,
 }
 
 /// Rate limiting: start of the current one-second window and messages in it.
@@ -109,6 +111,11 @@ impl Socket {
     pub fn mark_closed(&self) {
         self.open.store(false, Ordering::SeqCst);
         self.closing.notify_waiters();
+    }
+
+    /// Lets the writer finish the closing handshake the peer started.
+    pub fn end(&self) {
+        let _ = self.sender.send(Outgoing::End);
     }
 
     pub fn pages(&self) -> Vec<String> {

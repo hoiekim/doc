@@ -3,6 +3,7 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
@@ -103,7 +104,7 @@ async fn write_loop(mut sink: futures_util::stream::SplitSink<Stream, Message>, 
                     let _ = sink.flush().await;
                     return;
                 }
-                None => {
+                Some(Outgoing::End) | None => {
                     let _ = sink.close().await;
                     return;
                 }
@@ -143,7 +144,8 @@ fn now_ms() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-async fn on_message(ws: &SocketRef, raw: &str) {
+async fn on_message(ws: SocketRef, raw: String) {
+    let (ws, raw) = (&ws, raw.as_str());
     if !is_leader() {
         ws.close(NOT_LEADER, "not the realtime leader");
         return;
@@ -186,31 +188,52 @@ async fn serve(upgraded: Upgraded, user: AuthUser, session: AuthSession, spaces:
         ws.close(NOT_LEADER, "not the realtime leader");
     }
 
-    // Messages of one socket are handled in order; a socket this side has
-    // closed is left at once, without waiting for the other side to agree.
+    // As in the Bun server, a message is handled as soon as it arrives: the
+    // handlers of one socket start in order and then take turns wherever they
+    // wait, and a socket that closes is taken off its pages at once, even
+    // while one of its messages is still being handled.
+    let mut running = FuturesUnordered::new();
+    let mut idle = Box::pin(tokio::time::sleep(IDLE_TIMEOUT));
     while ws.is_open() {
-        let next = tokio::select! {
-            next = tokio::time::timeout(IDLE_TIMEOUT, incoming.next()) => next,
+        tokio::select! {
+            biased;
             _ = ws.closed() => break,
-        };
-        match next {
-            Ok(Some(Ok(Message::Text(text)))) => on_message(&ws, text.as_str()).await,
-            Ok(Some(Ok(Message::Binary(bytes)))) => on_message(&ws, &String::from_utf8_lossy(&bytes)).await,
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) => break,
-            Ok(Some(Ok(_))) => {}
-            Ok(Some(Err(WsError::Capacity(CapacityError::MessageTooLong { .. })))) => {
-                ws.close(1009, "message too big");
-                break;
+            next = incoming.next() => {
+                idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
+                match next {
+                    Some(Ok(Message::Text(text))) => running.push(on_message(ws.clone(), text.as_str().to_string())),
+                    Some(Ok(Message::Binary(bytes))) => running.push(on_message(ws.clone(), String::from_utf8_lossy(&bytes).into_owned())),
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(WsError::Capacity(CapacityError::MessageTooLong { .. }))) => {
+                        ws.close(1009, "message too big");
+                        break;
+                    }
+                    Some(Err(_)) => break,
+                }
             }
-            Ok(Some(Err(_))) | Err(_) => break,
+            Some(()) = running.next(), if !running.is_empty() => {}
+            _ = &mut idle => break,
         }
     }
     let closed_here = !ws.is_open();
     ws.mark_closed();
-    if let Err(error) = disconnect(&ws).await {
-        logger::error("leaving pages on disconnect failed", &error);
+    if !closed_here {
+        ws.end();
     }
-    registry::remove_socket(&ws);
+    // Leaving the pages and whatever messages are still being handled go on
+    // by themselves: the connection does not wait for them, as it does not in Bun.
+    let leaving = ws.clone();
+    tokio::spawn(async move {
+        let leave = async {
+            if let Err(error) = disconnect(&leaving).await {
+                logger::error("leaving pages on disconnect failed", &error);
+            }
+            registry::remove_socket(&leaving);
+        };
+        let drain = async { while running.next().await.is_some() {} };
+        tokio::join!(leave, drain);
+    });
     if closed_here {
         // Give the close frame a moment to be acknowledged before the connection goes.
         let _ = tokio::time::timeout(Duration::from_secs(5), async {

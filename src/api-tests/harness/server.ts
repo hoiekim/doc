@@ -181,7 +181,10 @@ const collect = async (stream: ReadableStream<Uint8Array> | null | undefined, in
     pending += decoder.decode(chunk, { stream: true });
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
-    into.push(...lines.filter(Boolean));
+    const whole = lines.filter(Boolean);
+    into.push(...whole);
+    // `API_TEST_ECHO_LOGS=1` shows what the server under test logs, for debugging a failure.
+    if (process.env.API_TEST_ECHO_LOGS) for (const line of whole) console.error(`[server] ${line}`);
   }
   if (pending) into.push(pending);
 };
