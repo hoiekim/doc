@@ -38,6 +38,8 @@ fn all_routes() -> Vec<Route> {
     all.extend(routes::members::routes());
     all.extend(routes::invitations::routes());
     all.extend(routes::groups::routes());
+    all.extend(routes::spaces::routes());
+    all.extend(routes::pages::routes());
     all
 }
 
