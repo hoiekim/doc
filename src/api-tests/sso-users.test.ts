@@ -360,6 +360,8 @@ describe("accounts that existed before single sign-on", () => {
       "olga@example.com",
       "race.a@example.com",
       "race.b@example.com",
+      "victim@example.com",
+      "stuck@example.com",
     ]) {
       local[email] = (await t.addMember(owner, email)).user.id;
     }
@@ -470,17 +472,65 @@ describe("accounts that existed before single sign-on", () => {
     const finishing = browsers.map((browser, i) => finishLogin(browser, callbacks[i]!));
     await idp.waitFor("token", seen + 2);
     release();
-    const ends = (await Promise.all(finishing)).map((f) => f.location);
-    // Accident: the two can deadlock in the database (one updates race.a and waits for race.b's email,
-    // the other updates race.b and waits for race.a's subject). The database then ends one of them
-    // after a second, and that sign-in is turned away. Whichever happens, one account is linked.
-    for (const end of ends) expect(["/", "/login?sso_error=login_failed"]).toContain(end ?? "");
-    expect(ends).toContain("/");
+    // The two can deadlock in the database: one gives race.a the email and waits for race.b's row, the
+    // other links race.b and waits for race.a's. The one the database ends starts over, so both get in.
+    expect((await Promise.all(finishing)).map((f) => f.location)).toEqual(["/", "/"]);
     expect((await userBySub("usr_racer"))!.id).toBe(local["race.a@example.com"]!);
     expect((await userByEmail("race.b@example.com"))!.auth_sub).toBeNull();
-    for (const [i, browser] of browsers.entries()) {
-      if (ends[i] === "/") expect((await me(browser)).id).toBe(local["race.a@example.com"]);
-    }
+    for (const browser of browsers) expect((await me(browser)).id).toBe(local["race.a@example.com"]);
+  });
+
+  describe("a sign-in the database ends to break a deadlock", () => {
+    /** Makes the first `times` updates of that account's row fail as the victim of a deadlock does. */
+    const deadlocks = async (email: string, times: number) => {
+      await t.sql.unsafe(`CREATE SEQUENCE deadlock_tries`);
+      await t.sql.unsafe(`CREATE FUNCTION deadlock_victim() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF nextval('deadlock_tries') <= ${times} THEN
+            RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await t.sql.unsafe(`CREATE TRIGGER deadlock_victim BEFORE UPDATE ON users FOR EACH ROW WHEN (OLD.email = '${email}') EXECUTE FUNCTION deadlock_victim()`);
+      return async () => {
+        const [{ tries }] = await t.sql`SELECT last_value::int AS tries FROM deadlock_tries`;
+        await t.sql.unsafe(`DROP TRIGGER deadlock_victim ON users`);
+        await t.sql.unsafe(`DROP FUNCTION deadlock_victim`);
+        await t.sql.unsafe(`DROP SEQUENCE deadlock_tries`);
+        return tries as number;
+      };
+    };
+
+    test("is done again from the start, and gets in", async () => {
+      const done = await deadlocks("victim@example.com", 1);
+      let tries = 0;
+      try {
+        const attempt = await enter({ sub: "usr_victim", username: "victim", email: "victim@example.com" });
+        expect(attempt.location).toBe("/");
+        expect((await me(attempt.client)).id).toBe(local["victim@example.com"]);
+      } finally {
+        tries = await done();
+      }
+      // The update that was ended, and the ones of the second try.
+      expect(tries).toBeGreaterThanOrEqual(2);
+      expect((await userBySub("usr_victim"))!.id).toBe(local["victim@example.com"]!);
+    });
+
+    test("is given up after three tries, and logged", async () => {
+      const mark = t.logs.length;
+      const done = await deadlocks("stuck@example.com", 1000);
+      let tries = 0;
+      try {
+        expectTurnedAway(await enter({ sub: "usr_stuck", username: "stuck", email: "stuck@example.com" }), "login_failed");
+      } finally {
+        tries = await done();
+      }
+      expect(tries).toBe(3);
+      expect(await userBySub("usr_stuck")).toBeUndefined();
+      const entry = await logged(t, { msg: "single sign-on failed" }, mark);
+      expect(entry).toMatchObject({ level: "error", msg: "single sign-on failed" });
+      expect(String(entry.error)).toContain("deadlock detected");
+    });
   });
 
   test("a refused sign-in is logged only when it is the provider's doing: no_email, account_exists and deactivated are not", async () => {

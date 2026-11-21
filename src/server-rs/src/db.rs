@@ -46,6 +46,11 @@ impl DbError {
     pub fn is_unique_violation(&self) -> bool {
         self.code() == Some("23505")
     }
+
+    /// The database ended this statement to break a deadlock.
+    pub fn is_deadlock(&self) -> bool {
+        self.code() == Some("40P01")
+    }
 }
 
 impl fmt::Display for DbError {

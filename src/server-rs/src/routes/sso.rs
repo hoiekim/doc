@@ -8,7 +8,7 @@ use crate::auth_client::{AuthClient, AuthError, StartLoginOptions};
 use crate::http::{empty_body, http_error, not_found, ok_status, public_get, public_post, read_text, response, AppError, Body, Ctx, Reply, Result, Route};
 use crate::logger;
 use crate::ratelimit::rate_limit;
-use crate::sso::{apply_claims, apply_event, auth_client, find_or_create_user, login_failure, sso_mode, SsoError};
+use crate::sso::{apply_event, auth_client, login_failure, resolve_user, sso_mode, SsoError};
 use crate::handler;
 
 /// Events are one signed token each; anything near this size is not one.
@@ -62,11 +62,10 @@ async fn start_login(ctx: &mut Ctx) -> Result<Reply> {
 
 /// Finds the person the provider signed in and starts their session here.
 async fn sign_in_from_provider(ctx: &mut Ctx, login: &crate::auth_client::Login) -> Result<Option<SsoError>> {
-    let found = match find_or_create_user(&login.claims, &login.id_claims).await? {
+    let user = match resolve_user(&login.claims, &login.id_claims).await? {
         Ok(user) => user,
         Err(reason) => return Ok(Some(reason)),
     };
-    let user = apply_claims(found, &login.claims, Some(&login.id_claims)).await?;
     // Activation is doc's own: the provider let this person in, but an admin here deactivated them.
     if user.deactivated_at.is_some() {
         return Ok(Some("deactivated"));

@@ -81,6 +81,10 @@ impl AppError {
     pub fn is_unique_violation(&self) -> bool {
         matches!(self, AppError::Db(e) if e.is_unique_violation())
     }
+
+    pub fn is_deadlock(&self) -> bool {
+        matches!(self, AppError::Db(e) if e.is_deadlock())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;

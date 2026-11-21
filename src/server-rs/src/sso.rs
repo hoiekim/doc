@@ -292,6 +292,36 @@ pub async fn find_or_create_user(claims: &AccessClaims, id_claims: &IdClaims) ->
     create_user(claims, &email).await
 }
 
+const RESOLVE_TRIES: usize = 3;
+
+/// The local user a sign-in is for, with the provider's claims applied; or
+/// why there is none.
+///
+/// Two sign-ins of one person at the same moment can each hold a row the
+/// other needs: when AUTH_LINK_USERS points at one account and the ID token's
+/// email at another, one sign-in gives the first account that email (and
+/// waits for the second account's row) while the other links the second
+/// account to the subject (and waits for the first account's). The database
+/// ends one of the two statements. Nothing of it was written, and by then the
+/// other sign-in is through, so the one that was ended starts over and finds
+/// the account.
+pub async fn resolve_user(claims: &AccessClaims, id_claims: &IdClaims) -> Result<std::result::Result<UserRow, SsoError>> {
+    let mut attempt = 1;
+    loop {
+        let resolved: Result<std::result::Result<UserRow, SsoError>> = async {
+            match find_or_create_user(claims, id_claims).await? {
+                Ok(found) => Ok(Ok(apply_claims(found, claims, Some(id_claims)).await?)),
+                Err(reason) => Ok(Err(reason)),
+            }
+        }
+        .await;
+        match resolved {
+            Err(error) if error.is_deadlock() && attempt < RESOLVE_TRIES => attempt += 1,
+            outcome => return outcome,
+        }
+    }
+}
+
 /// Copies the provider's view of the user onto the local row: the role, the
 /// name and, at sign-in, a verified email. Activation is doc's own, so a
 /// deactivated account stays deactivated.
