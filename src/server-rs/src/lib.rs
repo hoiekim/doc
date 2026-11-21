@@ -8,6 +8,7 @@
 pub mod app;
 pub mod auth;
 pub mod auth_client;
+pub mod bases;
 pub mod common;
 pub mod config;
 pub mod content;
