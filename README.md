@@ -62,6 +62,12 @@ services:
 Open the app and create the first account; it becomes the workspace owner. Database migrations run
 automatically on start. All settings are listed in [`.env.example`](.env.example).
 
+The published image runs the Rust server (`Dockerfile.rust`). It reads its settings from the environment
+only: pass them as above or with `env_file:`, not as a `.env` file inside the container. It cannot reach
+Postgres over TLS: with `sslmode=require` (or `verify-ca`, `verify-full`) in `DATABASE_URL` it refuses to
+start. `Dockerfile` builds the same app with the Bun server; either image runs on the same database, and one
+can replace the other in a rolling deploy.
+
 Put the app behind a reverse proxy that terminates TLS and forwards WebSocket upgrades on `/api/ws`, and
 set `TRUST_PROXY=true` so rate limiting sees real client IPs.
 
@@ -198,8 +204,9 @@ TEST_DATABASE_URL=postgres://localhost:5432/doc_test bun run test:api:rust   # t
 
 ## The Rust server
 
-`src/server-rs` is the same backend written in Rust, side by side with `src/server`: the same API, database,
-migrations, storage and environment variables. It is held to the Bun server's behaviour by the API suite and
+`src/server-rs` is the same backend written in Rust, side by side with `src/server`, and the one the published
+image runs: the same API, database, migrations, storage and environment variables. It is held to the Bun
+server's behaviour by the API suite and
 by fixtures generated from the TypeScript; `src/server-rs/README.md` says how, and lists the few known
 differences (the main one: it cannot connect to Postgres over TLS).
 
