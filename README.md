@@ -3,8 +3,9 @@
 A self-hosted, real-time collaborative wiki that fits in a small machine. Write pages together with live
 cursors, organize them in spaces and nested trees, comment inline, and publish pages to the web.
 
-The server is a single Bun process with no runtime dependencies beyond Bun itself and Postgres. It idles
-at well under 128 MB of memory.
+The server is a single process with no runtime dependencies beyond Postgres. It exists twice, with the
+same API: in Rust (`src/server-rs`), which the published image runs, and in Bun (`src/server`), which needs
+only Bun itself. Either idles at well under 128 MB of memory.
 
 ## Features
 
